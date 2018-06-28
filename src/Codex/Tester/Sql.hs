@@ -1,4 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
+
 module Codex.Tester.Sql (
   sqlTester,
   sqlSelectTester,
@@ -14,6 +16,13 @@ import           Control.Exception
 import           Control.Applicative
 
 
+data ArgType = Value | File
+data Arg = Arg { _type :: ArgType
+               , _opt :: String
+               , _value :: String
+               }
+
+
 sqlTester :: Tester Result
 sqlTester = sqlSelectTester <|> sqlEditTester <|> sqlSchemaTester
 
@@ -26,33 +35,33 @@ sqlSelectTester = tester "select" $ do
   ---
   evaluator <- configured "language.sql.evaluator.select"
   confArgs <- getOptConfArgs "language.sql.args"
-              [ ("-H", "host")
-              , ("-P", "port")
-              , ("-u", "user_guest")
-              , ("-p", "pass_guest")
+              [ Arg Value "-H" "host"
+              , Arg Value "-P" "port"
+              , Arg Value "-u" "user_guest"
+              , Arg Value "-p" "pass_guest"
               ]
   metaArgs <- getOptMetaArgs
-              [ ("-d", "db-name") ]
+              [ Arg Value "-d" "db-name" ]
   confInitArgs <- getOptConfArgs "language.sql.args"
-              [ ("-H", "host")
-              , ("-P", "port")
-              , ("-u", "user_schema")
-              , ("-p", "pass_schema")
+              [ Arg Value "-H" "host"
+              , Arg Value "-P" "port"
+              , Arg Value "-u" "user_schema"
+              , Arg Value "-p" "pass_schema"
               ]
   metaInitArgs <- getOptMetaArgs
-              [ ("-i", "db-init-sql") ]
+              [ Arg Value "-i" "db-init-sql" ]
   metaInitFileArgs <- getOptMetaArgs
-              [ ("-I", "db-init-file") ]
+              [ Arg File "-I" "db-init-file" ]
   answer <- liftIO (getSqlAnswer meta)
-  initSelectProblem =<< checkNeedInit (confArgs ++ confInitArgs ++ metaInitArgs) metaInitFileArgs
-  withTemp "submit.sql" src $ \submittedFilePath -> do
-    chmod readable submittedFilePath
-    classify <$> unsafeExec evaluator
-      ((concatArgs $ confArgs ++ metaArgs) ++ ["-a", answer, "-S", submittedFilePath]) ""
+  initSelectProblem =<< checkNeedInit (confInitArgs ++ metaInitArgs ++ metaInitFileArgs)
+  withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
+    withTemp "submit.sql" src $ \submittedFilePath -> do
+      classify <$> unsafeExec evaluator
+        ((concatArgs $ confArgs ++ metaArgs) ++ ["-A", answerFilePath, "-S", submittedFilePath]) ""
 
 
-checkNeedInit :: [(String, String)] -> [(String, String)] -> Tester Bool
-checkNeedInit text_args file_args =
+checkNeedInit :: [Arg] -> Tester Bool
+checkNeedInit args =
   return False
 
 
@@ -69,23 +78,23 @@ sqlEditTester = tester "edit" $ do
   meta <- testMetadata
   evaluator <- configured "language.sql.evaluator.edit"
   confArgs <- getOptConfArgs "language.sql.args"
-             [ ("-H", "host")
-             , ("-P", "port")
-             , ("-uS", "user_schema")
-             , ("-pS", "pass_schema")
-             , ("-uE", "user_edit")
-             , ("-pE", "pass_edit")
-             , ("-D", "prefix")
-             ]
+              [ Arg Value "-H" "host"
+              , Arg Value "-P" "port"
+              , Arg Value "-uS" "user_schema"
+              , Arg Value "-pS" "pass_schema"
+              , Arg Value "-uE" "user_edit"
+              , Arg Value "-pE" "pass_edit"
+              , Arg Value "-D" "prefix"
+              ]
   metaArgs <- getOptMetaArgs
-             [ ("-i", "db-init-sql")
-             , ("-I", "db-init-file")
-             ]
+              [ Arg Value "-i" "db-init-sql"
+              , Arg File "-I" "db-init-file"
+              ]
   answer <- liftIO (getSqlAnswer meta)
-  withTemp "submit.sql" src $ \submittedFilePath -> do
-    chmod readable submittedFilePath
-    classify <$> unsafeExec evaluator
-      ((concatArgs $ confArgs ++ metaArgs) ++ ["-a", answer,"-S", submittedFilePath]) ""
+  withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
+    withTemp "submit.sql" src $ \submittedFilePath -> do
+      classify <$> unsafeExec evaluator
+        ((concatArgs $ confArgs ++ metaArgs) ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
 sqlSchemaTester :: Tester Result
@@ -96,39 +105,39 @@ sqlSchemaTester = tester "schema" $ do
   ---
   evaluator <- configured "language.sql.evaluator.schema"
   confArgs <- getOptConfArgs "language.sql.args"
-             [ ("-H", "host")
-             , ("-P", "port")
-             , ("-u", "user_schema")
-             , ("-p", "pass_schema")
-             , ("-D", "prefix")
-             ]
+              [ Arg Value "-H" "host"
+              , Arg Value "-P" "port"
+              , Arg Value "-u" "user_schema"
+              , Arg Value "-p" "pass_schema"
+              , Arg Value "-D" "prefix"
+              ]
   metaArgs <- getOptMetaArgs
-             [ ("-i", "db-init-sql")
-             , ("-I", "db-init-file")
-             ]
+              [ Arg Value "-i" "db-init-sql"
+              , Arg File "-I" "db-init-file"
+              ]
   answer <- liftIO (getSqlAnswer meta)
-  withTemp "submit.sql" src $ \submittedFilePath -> do
-    chmod readable submittedFilePath
-    classify <$> unsafeExec evaluator
-      ((concatArgs $ confArgs ++ metaArgs) ++ ["-a", answer, "-S", submittedFilePath]) ""
+  withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
+    withTemp "submit.sql" src $ \submittedFilePath -> do
+      classify <$> unsafeExec evaluator
+        ((concatArgs $ confArgs ++ metaArgs) ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
-getOptConfArgs :: Text -> [(String, String)] -> Tester [(String, String)]
-getOptConfArgs prefix opts =
-  catMaybes <$> mapM optConfArg opts
+getOptConfArgs :: Text -> [Arg] -> Tester [Arg]
+getOptConfArgs prefix args =
+  catMaybes <$> mapM optConfArg args
   where
-    optConfArg (opt, key) = do
-      cnf <- maybeConfigured (prefix<>"."<>(T.pack key))
-      return $ maybe Nothing (\x -> Just (opt, x)) cnf
+    optConfArg arg = do
+      cnf <- maybeConfigured (prefix<>"."<>(T.pack (_value arg)))
+      return $ maybe Nothing (\x -> Just(arg{_value=x})) cnf
 
 
-getOptMetaArgs :: [(String, String)] -> Tester [(String, String)]
-getOptMetaArgs opts = do
+getOptMetaArgs :: [Arg] -> Tester [Arg]
+getOptMetaArgs args = do
   meta <- testMetadata
-  let optMetaArg (opt, key) = do
-      cnf <- lookupFromMeta key meta
-      return (opt, cnf)
-  return $ mapMaybe (optMetaArg) opts
+  let optMetaArg arg = do
+      cnf <- lookupFromMeta (_value arg) meta
+      return arg{_value=cnf}
+  return $ mapMaybe (optMetaArg) args
 
 
 classify :: (ExitCode, Text, Text) -> Result
@@ -153,5 +162,5 @@ getSqlAnswer meta = do
       return answer
 
 
-concatArgs :: [(a, a)] -> [a]
-concatArgs args = concatMap (\(x, y) -> [x, y]) args
+concatArgs :: [Arg] -> [String]
+concatArgs args = concatMap (\Arg{..} -> [_opt, _value]) args
