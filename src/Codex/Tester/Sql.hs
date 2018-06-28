@@ -9,6 +9,7 @@ module Codex.Tester.Sql (
 import           Codex.Tester
 import           Data.Text(Text)
 import qualified Data.Text as T
+import           Data.Maybe
 import           Control.Exception
 import           Control.Applicative
 
@@ -36,7 +37,7 @@ sqlSelectTester = tester "select" $ do
   withTemp "submit.sql" src $ \submittedFilePath -> do
     chmod readable submittedFilePath
     classify <$> unsafeExec evaluator
-      (confArgs ++ metaArgs ++ ["-a", answer, "-S", submittedFilePath]) ""
+      ((concatArgs $ confArgs ++ metaArgs) ++ ["-a", answer, "-S", submittedFilePath]) ""
 
 
 sqlEditTester :: Tester Result
@@ -63,7 +64,7 @@ sqlEditTester = tester "edit" $ do
   withTemp "submit.sql" src $ \submittedFilePath -> do
     chmod readable submittedFilePath
     classify <$> unsafeExec evaluator
-      (confArgs ++ metaArgs ++ ["-a", answer,"-S", submittedFilePath]) ""
+      ((concatArgs $ confArgs ++ metaArgs) ++ ["-a", answer,"-S", submittedFilePath]) ""
 
 
 sqlSchemaTester :: Tester Result
@@ -88,24 +89,25 @@ sqlSchemaTester = tester "schema" $ do
   withTemp "submit.sql" src $ \submittedFilePath -> do
     chmod readable submittedFilePath
     classify <$> unsafeExec evaluator
-      (confArgs ++ metaArgs ++ ["-a", answer, "-S", submittedFilePath]) ""
+      ((concatArgs $ confArgs ++ metaArgs) ++ ["-a", answer, "-S", submittedFilePath]) ""
 
 
-getOptConfArgs :: Text -> [(String, Text)] -> Tester [String]
+getOptConfArgs :: Text -> [(String, String)] -> Tester [(String, String)]
 getOptConfArgs prefix opts =
-  concat <$> mapM optConfArg opts
+  catMaybes <$> mapM optConfArg opts
   where
     optConfArg (opt, key) = do
-      cnf <- maybeConfigured (prefix<>"."<>key)
-      return $ maybe [] (\x -> [opt, x]) cnf
+      cnf <- maybeConfigured (prefix<>"."<>(T.pack key))
+      return $ maybe Nothing (\x -> Just (opt, x)) cnf
 
 
-getOptMetaArgs :: [(String, String)] -> Tester [String]
+getOptMetaArgs :: [(String, String)] -> Tester [(String, String)]
 getOptMetaArgs opts = do
   meta <- testMetadata
-  let optMetaArg (opt,key) =
-          maybe [] (\x -> [opt, x]) (lookupFromMeta key meta)
-  return $ concatMap optMetaArg opts
+  let optMetaArg (opt, key) = do
+      cnf <- lookupFromMeta key meta
+      return (opt, cnf)
+  return $ mapMaybe (optMetaArg) opts
 
 
 classify :: (ExitCode, Text, Text) -> Result
@@ -128,3 +130,7 @@ getSqlAnswer meta = do
       throwIO (miscError "no sql-answer specified in metadata")
     Just answer ->
       return answer
+
+
+concatArgs :: [(a, a)] -> [a]
+concatArgs args = concatMap (\(x, y) -> [x, y]) args
