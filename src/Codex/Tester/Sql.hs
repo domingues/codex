@@ -33,11 +33,32 @@ sqlSelectTester = tester "select" $ do
               ]
   metaArgs <- getOptMetaArgs
               [ ("-d", "db-name") ]
+  confInitArgs <- getOptConfArgs "language.sql.args"
+              [ ("-H", "host")
+              , ("-P", "port")
+              , ("-u", "user_schema")
+              , ("-p", "pass_schema")
+              ]
+  metaInitArgs <- getOptMetaArgs
+              [ ("-i", "db-init-sql") ]
+  metaInitFileArgs <- getOptMetaArgs
+              [ ("-I", "db-init-file") ]
   answer <- liftIO (getSqlAnswer meta)
+  initSelectProblem =<< checkNeedInit (confArgs ++ confInitArgs ++ metaInitArgs) metaInitFileArgs
   withTemp "submit.sql" src $ \submittedFilePath -> do
     chmod readable submittedFilePath
     classify <$> unsafeExec evaluator
       ((concatArgs $ confArgs ++ metaArgs) ++ ["-a", answer, "-S", submittedFilePath]) ""
+
+
+checkNeedInit :: [(String, String)] -> [(String, String)] -> Tester Bool
+checkNeedInit text_args file_args =
+  return False
+
+
+initSelectProblem :: Bool -> Tester ()
+initSelectProblem False = return ()
+initSelectProblem True = liftIO $ throwIO (miscError "ups")
 
 
 sqlEditTester :: Tester Result
