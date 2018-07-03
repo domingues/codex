@@ -34,26 +34,26 @@ sqlSelectTester = tester "select" $ do
               ]
   metaArgs <- getOptMetaArgs
               [ Arg Value "-d" "db-name" ]
-  initConfArgs <- getOptConfArgs "language.sql.args"
+  buildConfArgs <- getOptConfArgs "language.sql.args"
               [ Arg Value "-H" "host"
               , Arg Value "-P" "port"
               , Arg Value "-u" "user_schema"
               , Arg Value "-p" "pass_schema"
               ]
-  initMetaArgs <- getOptMetaArgs
+  buildMetaArgs <- getOptMetaArgs
               [ Arg Value "-i" "db-init-sql"
               , Arg File "-I" "db-init-file"
               ]
   answer <- liftIO (getSqlAnswer meta)
-  initSelectProblem =<< getBuildStatus (confArgs ++ metaArgs ++ initConfArgs ++ initMetaArgs)
+  buildSelectProblem =<< getBuildStatus (confArgs ++ metaArgs ++ buildConfArgs ++ buildMetaArgs)
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath -> do
       classify <$> unsafeExec evaluator
         ((concatArgs $ confArgs ++ metaArgs) ++ ["-A", answerFilePath, "-S", submittedFilePath]) ""
 
 
-initSelectProblem :: (BuildStatus, BuildStatus) -> Tester ()
-initSelectProblem x = do
+buildSelectProblem :: (BuildStatus, BuildStatus) -> Tester ()
+buildSelectProblem x = do
   liftIO $ print x
   return ()
 
