@@ -36,13 +36,11 @@ data BuildStatus = Ok BuildId
 
 
 data ArgType = Value | File deriving Generic
-instance Hashable ArgType
-
-
 data Arg = Arg { _type  :: ArgType
                , _opt   :: String
                , _value :: String
                } deriving Generic
+instance Hashable ArgType
 instance Hashable Arg
 
 
