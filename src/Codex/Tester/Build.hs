@@ -34,8 +34,10 @@ data BuildStatus = Ok BuildId
            | Ignore
            deriving Show
 
+
 data ArgType = Value | File deriving Generic
 instance Hashable ArgType
+
 
 data Arg = Arg { _type  :: ArgType
                , _opt   :: String
