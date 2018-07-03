@@ -53,3 +53,9 @@ initCmds = either (error.show) Map.assocs $ runMap $ do
             \timing TEXT NOT NULL)",
             "CREATE INDEX user_index ON submissions(user_id)"
            ]
+  "builds" ## ["CREATE TABLE builds (\
+            \id INTEGER PRIMARY KEY, \
+            \path TEXT NOT NULL UNIQUE, \
+            \build_id INTEGER NOT NULL)",
+            "CREATE INDEX build_id ON builds(build_id)"
+           ]

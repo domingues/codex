@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module Codex.Tester.Sql (
   sqlTester,
@@ -11,16 +10,9 @@ module Codex.Tester.Sql (
 import           Codex.Tester
 import           Data.Text(Text)
 import qualified Data.Text as T
-import           Data.Maybe
 import           Control.Exception
 import           Control.Applicative
-
-
-data ArgType = Value | File
-data Arg = Arg { _type :: ArgType
-               , _opt :: String
-               , _value :: String
-               }
+import           Codex.Tester.Build
 
 
 sqlTester :: Tester Result
@@ -42,32 +34,28 @@ sqlSelectTester = tester "select" $ do
               ]
   metaArgs <- getOptMetaArgs
               [ Arg Value "-d" "db-name" ]
-  confInitArgs <- getOptConfArgs "language.sql.args"
+  initConfArgs <- getOptConfArgs "language.sql.args"
               [ Arg Value "-H" "host"
               , Arg Value "-P" "port"
               , Arg Value "-u" "user_schema"
               , Arg Value "-p" "pass_schema"
               ]
-  metaInitArgs <- getOptMetaArgs
-              [ Arg Value "-i" "db-init-sql" ]
-  metaInitFileArgs <- getOptMetaArgs
-              [ Arg File "-I" "db-init-file" ]
+  initMetaArgs <- getOptMetaArgs
+              [ Arg Value "-i" "db-init-sql"
+              , Arg File "-I" "db-init-file"
+              ]
   answer <- liftIO (getSqlAnswer meta)
-  initSelectProblem =<< checkNeedInit (confInitArgs ++ metaInitArgs ++ metaInitFileArgs)
+  initSelectProblem =<< getBuildStatus (confArgs ++ metaArgs ++ initConfArgs ++ initMetaArgs)
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath -> do
       classify <$> unsafeExec evaluator
         ((concatArgs $ confArgs ++ metaArgs) ++ ["-A", answerFilePath, "-S", submittedFilePath]) ""
 
 
-checkNeedInit :: [Arg] -> Tester Bool
-checkNeedInit args =
-  return False
-
-
-initSelectProblem :: Bool -> Tester ()
-initSelectProblem False = return ()
-initSelectProblem True = liftIO $ throwIO (miscError "ups")
+initSelectProblem :: (BuildStatus, BuildStatus) -> Tester ()
+initSelectProblem x = do
+  liftIO $ print x
+  return ()
 
 
 sqlEditTester :: Tester Result
@@ -122,24 +110,6 @@ sqlSchemaTester = tester "schema" $ do
         ((concatArgs $ confArgs ++ metaArgs) ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
-getOptConfArgs :: Text -> [Arg] -> Tester [Arg]
-getOptConfArgs prefix args =
-  catMaybes <$> mapM optConfArg args
-  where
-    optConfArg arg = do
-      cnf <- maybeConfigured (prefix<>"."<>(T.pack (_value arg)))
-      return $ maybe Nothing (\x -> Just(arg{_value=x})) cnf
-
-
-getOptMetaArgs :: [Arg] -> Tester [Arg]
-getOptMetaArgs args = do
-  meta <- testMetadata
-  let optMetaArg arg = do
-      cnf <- lookupFromMeta (_value arg) meta
-      return arg{_value=cnf}
-  return $ mapMaybe (optMetaArg) args
-
-
 classify :: (ExitCode, Text, Text) -> Result
 classify (ExitSuccess, stdout, _)
   | match "Accepted" stdout              = accepted (dropFirstLn stdout)
@@ -160,7 +130,3 @@ getSqlAnswer meta = do
       throwIO (miscError "no sql-answer specified in metadata")
     Just answer ->
       return answer
-
-
-concatArgs :: [Arg] -> [String]
-concatArgs args = concatMap (\Arg{..} -> [_opt, _value]) args
