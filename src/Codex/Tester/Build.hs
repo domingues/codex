@@ -23,7 +23,6 @@ import           Data.Text                 (Text)
 import qualified Data.Text                 as T
 import           Database.SQLite.Simple
 import           GHC.Generics              (Generic)
-import           Snap.Snaplet.SqliteSimple (sqliteConn)
 import           System.Directory
 
 
@@ -66,8 +65,8 @@ getBuildStatus :: [Arg] -> Tester (BuildStatus, BuildStatus)
 getBuildStatus args = do
   path <- testPath
   currBuildId <- calculateBuildId args
-  sqlite <- testDb
-  qOldBuildId <- liftIO $ withMVar (sqliteConn sqlite) (\conn -> (query conn
+  dbConn <- testDbConn
+  qOldBuildId <- liftIO $ withMVar dbConn (\conn -> (query conn
         "SELECT build_id FROM builds WHERE path=?" (Only path) :: IO [Only BuildId]
         ))
   let oldBuildId = case qOldBuildId of
@@ -76,7 +75,7 @@ getBuildStatus args = do
   if oldBuildId == Just currBuildId then
     return (Ok currBuildId, Ignore)
   else do
-    qAlreadyBuild <- liftIO $ withMVar (sqliteConn sqlite) (\conn -> (query conn
+    qAlreadyBuild <- liftIO $ withMVar dbConn (\conn -> (query conn
           "SELECT build_id FROM builds WHERE build_id=? LIMIT 1" (Only currBuildId) :: IO [Only BuildId]
           ))
     let currStatus = case qAlreadyBuild of
@@ -85,7 +84,7 @@ getBuildStatus args = do
     oldStatus <- case oldBuildId of
           Nothing -> return Ignore
           Just h  -> do
-            qOldBuildUsage <- liftIO $ withMVar (sqliteConn sqlite) (\conn -> (query conn
+            qOldBuildUsage <- liftIO $ withMVar dbConn (\conn -> (query conn
                   "SELECT count(*) FROM builds WHERE build_id=?" (Only h) :: IO [Only BuildId]
                   ))
             case qOldBuildUsage of
@@ -98,8 +97,8 @@ getBuildStatus args = do
 setProblemBuild :: Int -> Tester ()
 setProblemBuild buildId = do
   path <- testPath
-  sqlite <- testDb
-  liftIO $ withMVar (sqliteConn sqlite) (\conn -> (execute conn
+  dbConn <- testDbConn
+  liftIO $ withMVar dbConn (\conn -> (execute conn
     "INSERT INTO builds (path, build_id) VALUES (?, ?)ON DUPLICATE KEY UPDATE build_id=?" (path, buildId, path)))
 
 
@@ -107,8 +106,8 @@ setProblemBuild buildId = do
 removeProblemBuild :: Tester ()
 removeProblemBuild = do
   path <- testPath
-  sqlite <- testDb
-  liftIO $ withMVar (sqliteConn sqlite) (\conn -> (execute conn
+  dbConn <- testDbConn
+  liftIO $ withMVar dbConn (\conn -> (execute conn
     "DELETE FROM builds WHERE path=?" (Only path)))
 
 

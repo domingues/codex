@@ -10,7 +10,7 @@ module Codex.Tester.Monad (
   maybeConfigured,
   testLimits,
   testConfig,
-  testDb,
+  testDbConn,
   testPath,
   testCode,
   testMetadata,
@@ -23,6 +23,7 @@ import qualified Data.Configurator as Conf
 
 import           Data.Monoid
 import           Control.Applicative
+import           Control.Concurrent.MVar
 import           Control.Monad.Trans
 import           Control.Monad.Trans.Maybe 
 import           Control.Monad.Trans.Reader
@@ -30,7 +31,7 @@ import           Control.Monad.Trans.Reader
 import           Codex.Types (Code)
 import           Text.Pandoc (Meta)
 import           Codex.Tester.Limits
-import           Snap.Snaplet.SqliteSimple(Sqlite)
+import           Database.SQLite.Simple(Connection)
 
 
 -- | a monad for testing scripts
@@ -42,7 +43,7 @@ newtype Tester a
 -- | testing environment
 data TestEnv
    = TestEnv { _testConfig :: Config   -- ^ static configuration file
-             , _testDb   :: Sqlite   -- ^ codex database
+             , _testDbConn :: MVar Connection   -- ^ codex database
              , _testMeta :: Meta       -- ^ exercise metadata
              , _testPath :: FilePath   -- ^ file path to exercise page
              , _testCode :: Code       -- ^ submited language & code 
@@ -50,18 +51,18 @@ data TestEnv
 
 
 -- | run a tester
-runTester :: Config -> Sqlite -> Meta -> FilePath -> Code -> Tester a
+runTester :: Config -> MVar Connection -> Meta -> FilePath -> Code -> Tester a
           -> IO (Maybe a)
-runTester cfg db meta path code action
-  = runMaybeT $ runReaderT (unTester action) (TestEnv cfg db meta path code)
+runTester cfg dbConn meta path code action
+  = runMaybeT $ runReaderT (unTester action) (TestEnv cfg dbConn meta path code)
 
 
 -- | fetch paramaters from the enviroment
 testConfig :: Tester Config
 testConfig = Tester (asks _testConfig)
 
-testDb :: Tester Sqlite
-testDb = Tester (asks _testDb)
+testDbConn :: Tester (MVar Connection)
+testDbConn = Tester (asks _testDbConn)
 
 testPath :: Tester FilePath
 testPath = Tester (asks _testPath)

@@ -75,15 +75,15 @@ evaluatorWith tester sub = do
       Nothing ->
         updateSubmission sqlite sid wrongInterval Valid
       Just timing -> do
-        result <- testerWrapper conf sqlite filepath code meta tester
+        result <- testerWrapper conf (S.sqliteConn sqlite) filepath code meta tester
                   `catch`
                   (\(e::SomeException) ->
                       return (miscError $ T.pack $ show e))
         updateSubmission sqlite sid result timing
 
 -- | set default limits and run a tester
-testerWrapper cfg sqlite path code meta action
-  = fromMaybe invalidTester <$> runTester cfg sqlite meta path code action
+testerWrapper cfg dbConn path code meta action
+  = fromMaybe invalidTester <$> runTester cfg dbConn meta path code action
 
 wrongInterval :: Result
 wrongInterval = miscError "invalid submission interval"
