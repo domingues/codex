@@ -23,7 +23,6 @@ sqlSelectTester :: Tester Result
 sqlSelectTester = tester "select" $ do
   Code lang src <- testCode
   guard (lang == "sql")
-  meta <- testMetadata
   ---
   evaluator <- configured "language.sql.evaluator.select"
   confArgs <- getOptConfArgs "language.sql.args"
@@ -63,7 +62,6 @@ sqlEditTester = tester "edit" $ do
   Code lang src <- testCode
   guard (lang == "sql")
   ---
-  meta <- testMetadata
   evaluator <- configured "language.sql.evaluator.edit"
   confArgs <- getOptConfArgs "language.sql.args"
               [ Arg Value "-H" "host"
@@ -89,7 +87,6 @@ sqlSchemaTester :: Tester Result
 sqlSchemaTester = tester "schema" $ do
   Code lang src <- testCode
   guard (lang == "sql")
-  meta <- testMetadata
   ---
   evaluator <- configured "language.sql.evaluator.schema"
   confArgs <- getOptConfArgs "language.sql.args"
@@ -123,10 +120,11 @@ classify (ExitSuccess, stdout, _)
 classify (_, stdout, stderr)             = miscError (stdout <> stderr)
 
 
-getSqlAnswer :: Meta -> IO String
-getSqlAnswer meta = do
-  case lookupFromMeta "answer-sql" meta of
+getSqlAnswer :: Tester String
+getSqlAnswer  = do
+  opt <- metadata "answer-sql"
+  case opt of
     Nothing ->
-      throwIO (miscError "no sql-answer specified in metadata")
+      liftIO $ throwIO $ miscError "missing answer-sql in metadata"
     Just answer ->
       return answer

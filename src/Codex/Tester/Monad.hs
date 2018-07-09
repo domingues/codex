@@ -14,6 +14,7 @@ module Codex.Tester.Monad (
   testPath,
   testCode,
   testMetadata,
+  metadata,
   ) where
 
 
@@ -30,6 +31,7 @@ import           Control.Monad.Trans.Reader
 
 import           Codex.Types (Code)
 import           Text.Pandoc (Meta)
+import           Codex.Page
 import           Codex.Tester.Limits
 import           Database.SQLite.Simple(Connection)
 
@@ -72,6 +74,11 @@ testCode = Tester (asks _testCode)
 
 testMetadata :: Tester Meta
 testMetadata = Tester (asks _testMeta)
+
+metadata :: FromMetaValue a => String -> Tester (Maybe a)
+metadata key = do
+  meta <- testMetadata
+  return (lookupFromMeta key meta)
 
 
 -- | fetch a configured value; return Nothing if key not present
