@@ -43,7 +43,7 @@ sqlSelectTester = tester "select" $ do
               [ Arg Value "-i" "db-init-sql"
               , Arg File "-I" "db-init-file"
               ]
-  answer <- liftIO (getSqlAnswer meta)
+  answer <- getSqlAnswer
   buildSelectProblem =<< getBuildStatus (confArgs ++ metaArgs ++ buildConfArgs ++ buildMetaArgs)
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath -> do
@@ -76,7 +76,7 @@ sqlEditTester = tester "edit" $ do
               [ Arg Value "-i" "db-init-sql"
               , Arg File "-I" "db-init-file"
               ]
-  answer <- liftIO (getSqlAnswer meta)
+  answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath -> do
       classify <$> unsafeExec evaluator
@@ -100,7 +100,7 @@ sqlSchemaTester = tester "schema" $ do
               [ Arg Value "-i" "db-init-sql"
               , Arg File "-I" "db-init-file"
               ]
-  answer <- liftIO (getSqlAnswer meta)
+  answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath -> do
       classify <$> unsafeExec evaluator

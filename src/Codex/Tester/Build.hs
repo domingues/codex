@@ -117,20 +117,18 @@ getOptConfArgs :: Text -> [Arg] -> Tester [Arg]
 getOptConfArgs prefix args =
   catMaybes <$> mapM optConfArg args
   where
-    optConfArg arg = do
-      cnf <- maybeConfigured (prefix<>"."<>(T.pack (_value arg)))
-      return $ maybe Nothing (\x -> Just(arg{_value=x})) cnf
+    optConfArg arg = maybe Nothing (\x -> Just(arg{_value=x}))
+                      <$> maybeConfigured (prefix<>"."<>(T.pack (_value arg)))
 
 
 -- | from a list of (Arg Type opt meta) return a list of (Arg Type opt value)
 --   where value comes from the problem metadata
 getOptMetaArgs :: [Arg] -> Tester [Arg]
-getOptMetaArgs args = do
-  meta <- testMetadata
-  let optMetaArg arg = do
-      cnf <- lookupFromMeta (_value arg) meta
-      return arg{_value=cnf}
-  return $ mapMaybe (optMetaArg) args
+getOptMetaArgs args =
+  catMaybes <$> mapM optMetaArg args
+  where
+    optMetaArg arg = maybe Nothing (\x -> Just(arg{_value=x}))
+                      <$> metadata (_value arg)
 
 
 -- | from a list of (Arg Type opt value) returns a list of [opt1, value1, ...]
