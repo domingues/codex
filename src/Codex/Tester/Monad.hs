@@ -1,7 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module Codex.Tester.Monad (
   Tester,
@@ -15,31 +14,40 @@ module Codex.Tester.Monad (
   testCode,
   testMetadata,
   metadata,
+  tester,
+  problemBuildId,
+  dependFile,
   ) where
-
 
 
 import           Data.Configurator.Types
 import qualified Data.Configurator as Conf
 
+import           Data.Hashable
 import           Data.Monoid
 import           Control.Applicative
+import           Control.Monad
 import           Control.Concurrent.MVar
 import           Control.Monad.Trans
-import           Control.Monad.Trans.Maybe 
+import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.Reader
+import           Control.Monad.Trans.State
 
 import           Codex.Types (Code)
 import           Text.Pandoc (Meta)
 import           Codex.Page
 import           Codex.Tester.Limits
-import           Database.SQLite.Simple(Connection)
+import           Database.SQLite.Simple (Connection)
+import qualified System.Directory as D
+import           Data.Time.Clock(UTCTime)
 
+
+type Hash = Int
 
 -- | a monad for testing scripts
 -- allows access to a test environment, IO and failure (i.e. passing)
 newtype Tester a
-  = Tester { unTester :: ReaderT TestEnv (MaybeT IO) a }
+  = Tester { unTester :: ReaderT TestEnv (StateT Hash (MaybeT IO)) a }
   deriving (Functor, Monad, Applicative, Alternative, MonadIO)
 
 -- | testing environment
@@ -48,15 +56,22 @@ data TestEnv
              , _testDbConn :: MVar Connection   -- ^ codex database
              , _testMeta :: Meta       -- ^ exercise metadata
              , _testPath :: FilePath   -- ^ file path to exercise page
-             , _testCode :: Code       -- ^ submited language & code 
-             } 
+             , _testCode :: Code       -- ^ submited language & code
+             }
+
+instance Hashable UTCTime where
+  hashWithSalt s t = hashWithSalt s (show t)
 
 
 -- | run a tester
 runTester :: Config -> MVar Connection -> Meta -> FilePath -> Code -> Tester a
           -> IO (Maybe a)
 runTester cfg dbConn meta path code action
-  = runMaybeT $ runReaderT (unTester action) (TestEnv cfg dbConn meta path code)
+  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg dbConn meta path code)) (0::Hash)
+
+
+addToHash :: Hashable a => a -> Tester ()
+addToHash v = Tester (lift $ modify (\h -> hashWithSalt h v))
 
 
 -- | fetch paramaters from the enviroment
@@ -75,24 +90,50 @@ testCode = Tester (asks _testCode)
 testMetadata :: Tester Meta
 testMetadata = Tester (asks _testMeta)
 
-metadata :: FromMetaValue a => String -> Tester (Maybe a)
+
+-- | returns the problem build id
+-- it is calculated from all the metadata and configurations fetched
+problemBuildId :: Tester Hash
+problemBuildId = Tester (lift get)
+
+
+-- | fetch a metadata value; return Nothing if key not present
+-- adds it key and value to the problem hash
+metadata :: (Hashable a, FromMetaValue a) => String -> Tester (Maybe a)
 metadata key = do
   meta <- testMetadata
-  return (lookupFromMeta key meta)
+  case lookupFromMeta key meta of
+    Nothing -> return Nothing
+    Just v -> do
+      addToHash key
+      addToHash v
+      return (Just v)
 
 
 -- | fetch a configured value; return Nothing if key not present
-maybeConfigured :: Configured a => Name -> Tester (Maybe a)
+-- adds it key and value to the problem hash
+maybeConfigured :: (Hashable a, Configured a) => Name -> Tester (Maybe a)
 maybeConfigured key = do
   cfg <- testConfig
-  liftIO $ Conf.lookup cfg key
+  c <- liftIO $ Conf.lookup cfg key
+  case c of
+    Nothing -> return Nothing
+    Just v -> do
+      addToHash key
+      addToHash v
+      return (Just v)
+
 
 -- | fetch a configuration value
 -- throws an exception if key is not present
-configured :: Configured a => Name -> Tester a
+-- adds it key and value to the problem hash
+configured :: (Hashable a, Configured a) => Name -> Tester a
 configured key = do
   cfg <- testConfig
-  liftIO $ Conf.require cfg key
+  v <- liftIO $ Conf.require cfg key
+  addToHash key
+  addToHash v
+  return v
 
 
 -- | get configured limits from the tester environment
@@ -104,8 +145,20 @@ testLimits key = do
     def  <- configLimits (Conf.subconfig "limits" cfg)
     spec <- configLimits (Conf.subconfig key cfg)
     return (spec <> def)
-                  
 
 
+-- | label a tester and ignore submissions that don't match
+tester :: String -> Tester a -> Tester a
+tester name cont = do
+  t <- metadata "tester"
+  guard (t == Just name)
+  cont
 
+
+-- | tells that the problem builds depends on that file
+-- adds the modification time of the file to the problem hash
+dependFile :: FilePath -> Tester ()
+dependFile path = do
+  mt <- liftIO $ D.getModificationTime path
+  addToHash mt
 
