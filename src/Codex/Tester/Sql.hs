@@ -34,7 +34,8 @@ sqlSelectTester = tester "select" $ do
                 , "-i" `optMetaArg` "db-init-sql"
                 , "-I" `optMetaFileArg` "db-init-file"
                 ]
-  buildSelectProblem buildArgs =<< getBuildStatus
+  buildId <- setup (buildSelectProblem buildArgs) (cleanSelectProblem buildArgs)
+  liftIO $ print ("dbName"::String, show buildId)
   args <- concatOptArgs
                 [ "-H" `optConfArg` "host"
                 , "-P" `optConfArg` "port"
@@ -49,10 +50,15 @@ sqlSelectTester = tester "select" $ do
         (args ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
-buildSelectProblem :: [String] -> (BuildStatus, BuildStatus) -> Tester ()
-buildSelectProblem args x = do
-  liftIO $ print args
-  liftIO $ print x
+buildSelectProblem :: [String] -> BuildId -> Tester ()
+buildSelectProblem args buildId = do
+  liftIO $ print ("build"::String, args, buildId)
+  return ()
+
+
+cleanSelectProblem :: [String] -> BuildId -> Tester ()
+cleanSelectProblem args buildId =  do
+  liftIO $ print ("clean"::String, args, buildId)
   return ()
 
 

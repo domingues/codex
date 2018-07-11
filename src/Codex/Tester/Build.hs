@@ -2,10 +2,7 @@
 
 module Codex.Tester.Build (
   BuildId,
-  BuildStatus(Ok, Build, Delete),
-  getBuildStatus,
-  setProblemBuild,
-  removeProblemBuild,
+  setup,
   ) where
 
 import           Codex.Tester
@@ -15,14 +12,36 @@ import           Database.SQLite.Simple
 
 type BuildId = Int
 data BuildStatus = Ok BuildId
-           | Build BuildId
-           | Delete BuildId
-           | Ignore
-           deriving Show
+                 | Build BuildId
+                 deriving Show
+data CleanStatus = Clean BuildId
+                 | Ignore
+                 deriving Show
+
+
+setup :: (BuildId -> Tester ()) -> (BuildId -> Tester ()) -> Tester BuildId
+setup fBuild fClean = do
+  buildStatus <- getBuildStatus
+  case buildStatus of
+    (Ok buildId, Clean cleanBuildId) -> do
+--      removeProblemBuild
+      fClean cleanBuildId
+      return buildId
+    (Build buildId, Clean cleanBuildId) -> do
+--      removeProblemBuild
+      fClean cleanBuildId
+      fBuild buildId
+--      setProblemBuild buildId
+      return buildId
+    (Build buildId, Ignore) -> do
+      fBuild buildId
+--      setProblemBuild buildId
+      return buildId
+    (Ok buildId, Ignore) -> return buildId
 
 
 -- | returns the current build status and the problem old build status
-getBuildStatus :: Tester (BuildStatus, BuildStatus)
+getBuildStatus :: Tester (BuildStatus, CleanStatus)
 getBuildStatus = do
   path <- testPath
   currBuildId <- problemBuildId
@@ -31,7 +50,7 @@ getBuildStatus = do
         "SELECT build_id FROM builds WHERE path=?" (Only path) :: IO [Only BuildId])
   let oldBuildId = case qOldBuildId of
         Only h:_ -> Just h
-        _          -> Nothing
+        _        -> Nothing
   if oldBuildId == Just currBuildId then
     return (Ok currBuildId, Ignore)
   else do
@@ -46,8 +65,8 @@ getBuildStatus = do
             qOldBuildUsage <- liftIO $ withMVar dbConn (\conn -> query conn
                   "SELECT count(*) FROM builds WHERE build_id=?" (Only h) :: IO [Only BuildId])
             case qOldBuildUsage of
-                  Only 1:_ -> return (Delete h)
-                  _          -> return Ignore
+                  Only 1:_ -> return (Clean h)
+                  _        -> return Ignore
     return (currStatus, oldStatus)
 
 
@@ -57,7 +76,7 @@ setProblemBuild buildId = do
   path <- testPath
   dbConn <- testDbConn
   liftIO $ withMVar dbConn (\conn -> execute conn
-    "INSERT INTO builds (path, build_id) VALUES (?, ?)ON DUPLICATE KEY UPDATE build_id=?" (path, buildId, path))
+    "INSERT INTO builds (path, build_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE build_id=?" (path, buildId, path))
 
 
 -- | remove the problem from the builds database
