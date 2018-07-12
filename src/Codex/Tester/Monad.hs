@@ -13,9 +13,9 @@ module Codex.Tester.Monad (
   testPath,
   testCode,
   testMetadata,
+  testHash,
   metadata,
   tester,
-  problemBuildId,
   dependFile,
   ) where
 
@@ -91,10 +91,10 @@ testMetadata :: Tester Meta
 testMetadata = Tester (asks _testMeta)
 
 
--- | returns the problem build id
+-- | returns the test current hash
 -- it is calculated from all the metadata and configurations fetched
-problemBuildId :: Tester Hash
-problemBuildId = Tester (lift get)
+testHash :: Tester Hash
+testHash = Tester (lift get)
 
 
 -- | fetch a metadata value; return Nothing if key not present

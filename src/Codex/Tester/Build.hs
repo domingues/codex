@@ -44,7 +44,7 @@ setup fBuild fClean = do
 getBuildStatus :: Tester (BuildStatus, CleanStatus)
 getBuildStatus = do
   path <- testPath
-  currBuildId <- problemBuildId
+  currBuildId <- testHash
   dbConn <- testDbConn
   qOldBuildId <- liftIO $ withMVar dbConn (\conn -> query conn
         "SELECT build_id FROM builds WHERE path=?" (Only path) :: IO [Only BuildId])
