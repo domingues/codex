@@ -24,7 +24,7 @@ setup :: (BuildId -> Tester ()) -> (BuildId -> Tester ()) -> Tester BuildId
 setup fBuild fClean = do
   buildStatus <- getBuildStatus
   case buildStatus of
-    (Ok buildId, Ignore)            -> return buildId
+    (Ok buildId, Ignore)            ->    return buildId
     (Set buildId, Ignore)           -> do setProblemBuild buildId
                                           return buildId
     (Build buildId, Ignore)         -> do fBuild buildId
