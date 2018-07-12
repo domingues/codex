@@ -13,6 +13,7 @@ import           Database.SQLite.Simple
 type BuildId = Int
 data BuildStatus = Ok BuildId
                  | Build BuildId
+                 | Set BuildId
                  deriving Show
 data CleanStatus = Clean BuildId
                  | Ignore
@@ -23,21 +24,19 @@ setup :: (BuildId -> Tester ()) -> (BuildId -> Tester ()) -> Tester BuildId
 setup fBuild fClean = do
   buildStatus <- getBuildStatus
   case buildStatus of
-    (Ok buildId, Clean cleanBuildId) -> do
---      removeProblemBuild
-      fClean cleanBuildId
-      return buildId
-    (Build buildId, Clean cleanBuildId) -> do
---      removeProblemBuild
-      fClean cleanBuildId
-      fBuild buildId
---      setProblemBuild buildId
-      return buildId
-    (Build buildId, Ignore) -> do
-      fBuild buildId
---      setProblemBuild buildId
-      return buildId
-    (Ok buildId, Ignore) -> return buildId
+    (Ok buildId, Ignore)            -> return buildId
+    (Set buildId, Ignore)           -> do setProblemBuild buildId
+                                          return buildId
+    (Build buildId, Ignore)         -> do fBuild buildId
+                                          setProblemBuild buildId
+                                          return buildId
+    (Set buildId, Clean cBuildId)   -> do setProblemBuild buildId
+                                          fClean cBuildId
+                                          return buildId
+    (Build buildId, Clean cBuildId) -> do fBuild buildId
+                                          setProblemBuild buildId
+                                          fClean cBuildId
+                                          return buildId
 
 
 -- | returns the current build status and the problem old build status
@@ -57,7 +56,7 @@ getBuildStatus = do
     qAlreadyBuild <- liftIO $ withMVar dbConn (\conn -> query conn
           "SELECT build_id FROM builds WHERE build_id=? LIMIT 1" (Only currBuildId) :: IO [Only BuildId])
     let currStatus = case qAlreadyBuild of
-          _:_ -> Ok currBuildId
+          _:_ -> Set currBuildId
           _   -> Build currBuildId
     oldStatus <- case oldBuildId of
           Nothing -> return Ignore
@@ -76,13 +75,4 @@ setProblemBuild buildId = do
   path <- testPath
   dbConn <- testDbConn
   liftIO $ withMVar dbConn (\conn -> execute conn
-    "INSERT INTO builds (path, build_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE build_id=?" (path, buildId, path))
-
-
--- | remove the problem from the builds database
-removeProblemBuild :: Tester ()
-removeProblemBuild = do
-  path <- testPath
-  dbConn <- testDbConn
-  liftIO $ withMVar dbConn (\conn -> execute conn
-    "DELETE FROM builds WHERE path=?" (Only path))
+    "INSERT OR REPLACE INTO builds (path, build_id) VALUES (?, ?)" (path, buildId))
