@@ -38,7 +38,6 @@ getBuildStatus = do
 
 -- | sets in the database the current problem build to the given build_id
 setProblemBuild :: BuildId -> Tester ()
-setProblemBuild buildId = return ()
 setProblemBuild buildId = do
   path <- testPath
   dbConn <- testDbConn
