@@ -124,12 +124,12 @@ sqlSchemaTester = tester "schema" $ do
 
 classify :: (ExitCode, Text, Text) -> Result
 classify (ExitSuccess, stdout, _)
-  | match "Accepted" stdout              = accepted (dropFirstLn stdout)
-  | match "Wrong Answer" stdout          = wrongAnswer (dropFirstLn stdout)
-  | match "Runtime Error" stdout         = runtimeError (dropFirstLn stdout)
-  | match "Compile Error" stdout         = compileError (dropFirstLn stdout)
-  | match "Time Limit Exceeded" stdout   = timeLimitExceeded (dropFirstLn stdout)
-  | match "Memory Limit Exceeded" stdout = memoryLimitExceeded (dropFirstLn stdout)
+  | T.isPrefixOf "Accepted" stdout              = accepted (dropFirstLn stdout)
+  | T.isPrefixOf "Wrong Answer" stdout          = wrongAnswer (dropFirstLn stdout)
+  | T.isPrefixOf "Runtime Error" stdout         = runtimeError (dropFirstLn stdout)
+  | T.isPrefixOf "Compile Error" stdout         = compileError (dropFirstLn stdout)
+  | T.isPrefixOf "Time Limit Exceeded" stdout   = timeLimitExceeded (dropFirstLn stdout)
+  | T.isPrefixOf "Memory Limit Exceeded" stdout = memoryLimitExceeded (dropFirstLn stdout)
   where
     dropFirstLn = T.dropWhile (/='\n')
 classify (_, stdout, stderr)             = miscError (stdout <> stderr)
