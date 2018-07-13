@@ -15,8 +15,8 @@ module Codex.Tester.Monad (
   testMetadata,
   testHash,
   metadata,
+  metadataFile,
   tester,
-  dependFile,
   ) where
 
 
@@ -40,6 +40,7 @@ import           Codex.Tester.Limits
 import           Database.SQLite.Simple (Connection)
 import qualified System.Directory as D
 import           Data.Time.Clock(UTCTime)
+import           System.FilePath
 
 
 type Hash = Int
@@ -110,6 +111,23 @@ metadata key = do
       return (Just v)
 
 
+-- | fetch a metadata absolute file path; return Nothing if key not present
+-- adds it key, value and file modification date to the problem hash
+metadataFile :: String -> Tester (Maybe FilePath)
+metadataFile key = do
+  meta <- testMetadata
+  case lookupFromMeta key meta of
+    Nothing -> return Nothing
+    Just v -> do
+      tp <- testPath
+      let path = takeDirectory tp </> v
+      mt <- liftIO $ D.getModificationTime path
+      addToHash key
+      addToHash v
+      addToHash mt
+      return (Just path)
+
+
 -- | fetch a configured value; return Nothing if key not present
 -- adds it key and value to the problem hash
 maybeConfigured :: (Hashable a, Configured a) => Name -> Tester (Maybe a)
@@ -153,12 +171,3 @@ tester name cont = do
   t <- metadata "tester"
   guard (t == Just name)
   cont
-
-
--- | tells that the problem builds depends on that file
--- adds the modification time of the file to the problem hash
-dependFile :: FilePath -> Tester ()
-dependFile path = do
-  mt <- liftIO $ D.getModificationTime path
-  addToHash mt
-

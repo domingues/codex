@@ -43,21 +43,19 @@ sqlSelectTester = tester "select" $ do
 
 getSelectDbName :: Tester (Maybe String)
 getSelectDbName = do
-  initFilePath <- metadata "db-init-file"
-  case initFilePath of
+  initFile <- metadataFile "db-init-file"
+  case initFile of
     Nothing -> return Nothing
     Just v -> do
       testPath' <- testPath
-      let initFilePath' = takeDirectory testPath' </> v
-      dependFile initFilePath'
       dbName <- do
         dbPrefix <- maybeConfigured "language.sql.args.prefix"
         return $ (fromMaybe "" dbPrefix) ++ "_"
                 ++ (map (\x -> if isAlphaNum x then x else '_') testPath')
-      setup $ setupSelectProblem dbName initFilePath'
+      setup $ setupProblem dbName v
       return (Just dbName)
   where
-    setupSelectProblem dbName initFilePath = do
+    setupProblem dbName initFilePath = do
       args <- concatArgs
           [ "-h" `joinConfArg` "host"
           , "-P" `joinConfArg` "port"
@@ -173,15 +171,5 @@ joinMetaArg arg key = arg `joinArg` metadata key
 
 
 joinMetaFileArg :: String -> String -> Tester OptArgs
-joinMetaFileArg arg key = arg `joinFileArg` metadata key
-  where
-    joinFileArg x y = do
-      y' <- y
-      case y' of
-        Nothing -> return Nothing
-        Just p -> do
-          tPath <- testPath
-          let path = takeDirectory tPath </> p
-          dependFile path
-          return (Just [x, path])
+joinMetaFileArg arg key = arg `joinArg` metadataFile key
 
