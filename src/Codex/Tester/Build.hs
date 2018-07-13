@@ -62,7 +62,7 @@ getBuildStatus = do
           Nothing -> return Ignore
           Just h  -> do
             qOldBuildUsage <- liftIO $ withMVar dbConn (\conn -> query conn
-                  "SELECT count(*) FROM builds WHERE build_id=?" (Only h) :: IO [Only BuildId])
+                  "SELECT count(*) FROM builds WHERE build_id=?" (Only h) :: IO [Only Int])
             case qOldBuildUsage of
                   Only 1:_ -> return (Clean h)
                   _        -> return Ignore
@@ -70,7 +70,7 @@ getBuildStatus = do
 
 
 -- | sets in the database the current problem build to the given build_id
-setProblemBuild :: Int -> Tester ()
+setProblemBuild :: BuildId -> Tester ()
 setProblemBuild buildId = do
   path <- testPath
   dbConn <- testDbConn

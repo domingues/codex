@@ -26,23 +26,13 @@ sqlSelectTester = tester "select" $ do
   guard (lang == "sql")
   ---
   evaluator <- configured "language.sql.evaluator.select"
-  buildArgs <- concatOptArgs
-                [ "-H" `optConfArg` "host"
-                , "-P" `optConfArg` "port"
-                , "-u" `optConfArg` "user_guest"
-                , "-p" `optConfArg` "pass_guest"
-                , "-i" `optMetaArg` "db-init-sql"
-                , "-I" `optMetaFileArg` "db-init-file"
-                ]
-  buildId <- setup (buildSelectProblem buildArgs) (cleanSelectProblem buildArgs)
-  liftIO $ print ("dbName"::String, show buildId)
-  args <- concatOptArgs
-                [ "-H" `optConfArg` "host"
-                , "-P" `optConfArg` "port"
-                , "-u" `optConfArg` "user_guest"
-                , "-p" `optConfArg` "pass_guest"
-                , "-d" `optMetaArg` "db-name"
-                ]
+  args <- concatArgs
+            [ "-H" `joinConfArg` "host"
+            , "-P" `joinConfArg` "port"
+            , "-u" `joinConfArg` "user_guest"
+            , "-p" `joinConfArg` "pass_guest"
+            , "-d" `joinArg` getDatabaseName
+            ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath ->
@@ -50,9 +40,42 @@ sqlSelectTester = tester "select" $ do
         (args ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
+getDatabaseName :: Tester (Maybe String)
+getDatabaseName = do
+  args <- concatArgs
+            [ "-i" `joinMetaArg` "db-init-sql"
+            , "-I" `joinMetaFileArg` "db-init-file"
+            ]
+  case args of
+    [] -> metadata "db-name"
+    _  -> do buildId <- setup (buildSelectProblem args) (cleanSelectProblem args)
+             dbName <- buildIdToDbName buildId
+             return (Just dbName)
+
+
+buildIdToDbName :: BuildId -> Tester (String)
+buildIdToDbName buildId = do
+  dbPrefix <- maybeConfigured "language.sql.args.prefix"
+  case dbPrefix of
+    Nothing -> dbName ""
+    Just v -> dbName v
+  where
+    dbName p = do
+      case show buildId of
+        '-':xs -> return $ p++('_':'_':xs)
+        hash -> return $ p++('_':hash)
+
+
 buildSelectProblem :: [String] -> BuildId -> Tester ()
 buildSelectProblem args buildId = do
-  liftIO $ print ("build"::String, args, buildId)
+  args' <- concatArgs
+            [ "-h" `joinConfArg` "host"
+            , "-P" `joinConfArg` "port"
+            , "-u" `joinConfArg` "user_schema"
+            , "-p" `fuseConfArg` "pass_schema"
+            ]
+  let args'' = args
+  liftIO $ print ("build"::String, args, args', buildId)
   return ()
 
 
@@ -68,17 +91,17 @@ sqlEditTester = tester "edit" $ do
   guard (lang == "sql")
   ---
   evaluator <- configured "language.sql.evaluator.edit"
-  args <- concatOptArgs
-                [ "-H" `optConfArg` "host"
-                , "-P" `optConfArg` "port"
-                , "-uS" `optConfArg` "user_schema"
-                , "-pS" `optConfArg` "pass_schema"
-                , "-uE" `optConfArg` "user_edit"
-                , "-pE" `optConfArg` "pass_edit"
-                , "-D" `optConfArg` "prefix"
-                , "-i" `optMetaArg` "db-init-sql"
-                , "-I" `optMetaArg` "db-init-file"
-                ]
+  args <- concatArgs
+            [ "-H" `joinConfArg` "host"
+            , "-P" `joinConfArg` "port"
+            , "-uS" `joinConfArg` "user_schema"
+            , "-pS" `joinConfArg` "pass_schema"
+            , "-uE" `joinConfArg` "user_edit"
+            , "-pE" `joinConfArg` "pass_edit"
+            , "-D" `joinConfArg` "prefix"
+            , "-i" `joinMetaArg` "db-init-sql"
+            , "-I" `joinMetaFileArg` "db-init-file"
+            ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath ->
@@ -92,15 +115,15 @@ sqlSchemaTester = tester "schema" $ do
   guard (lang == "sql")
   ---
   evaluator <- configured "language.sql.evaluator.schema"
-  args <- concatOptArgs
-                [ "-H" `optConfArg` "host"
-                , "-P" `optConfArg` "port"
-                , "-u" `optConfArg` "user_schema"
-                , "-p" `optConfArg` "pass_schema"
-                , "-D" `optConfArg` "prefix"
-                , "-i" `optMetaArg` "db-init-sql"
-                , "-I" `optMetaArg` "db-init-file"
-                ]
+  args <- concatArgs
+            [ "-H" `joinConfArg` "host"
+            , "-P" `joinConfArg` "port"
+            , "-u" `joinConfArg` "user_schema"
+            , "-p" `joinConfArg` "pass_schema"
+            , "-D" `joinConfArg` "prefix"
+            , "-i" `joinMetaArg` "db-init-sql"
+            , "-I" `joinMetaFileArg` "db-init-file"
+            ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath ->
@@ -132,33 +155,43 @@ getSqlAnswer  = do
 
 
 -- | deal with optional args
-type OptArg = Maybe (String, String)
+type OptArg = Maybe String
+type OptArgs = Maybe [String]
 
 
-concatOptArgs :: [Tester OptArg] -> Tester [String]
-concatOptArgs l = do
+concatArgs :: [Tester OptArgs] -> Tester [String]
+concatArgs l = do
   l' <- sequence l
-  return $ concatMap (\(x, y) -> [x, y]) (catMaybes l')
+  return $ concat (catMaybes l')
 
 
-optConfArg :: String -> Text -> Tester OptArg
-optConfArg arg key = arg `optArg` maybeConfigured ("language.sql.args." <> key)
-  where optArg x y = fmap (\v -> (x, v)) <$> y
+joinArg :: String -> Tester (OptArg) -> Tester OptArgs
+joinArg x y = fmap (\v -> [x, v]) <$> y
 
 
-optMetaArg :: String -> String -> Tester OptArg
-optMetaArg arg key = arg `optArg` metadata key
-  where optArg x y = fmap (\v -> (x, v)) <$> y
+joinConfArg :: String -> Text -> Tester OptArgs
+joinConfArg arg key = arg `joinArg` maybeConfigured ("language.sql.args." <> key)
 
 
-optMetaFileArg :: String -> String -> Tester OptArg
-optMetaFileArg arg key = arg `optFileArg` metadata key
+fuseConfArg :: String -> Text -> Tester OptArgs
+fuseConfArg arg key = arg `fuseArg` maybeConfigured ("language.sql.args." <> key)
+  where fuseArg x y = fmap (\v -> [x++v]) <$> y
+
+
+joinMetaArg :: String -> String -> Tester OptArgs
+joinMetaArg arg key = arg `joinArg` metadata key
+
+
+joinMetaFileArg :: String -> String -> Tester OptArgs
+joinMetaFileArg arg key = arg `joinFileArg` metadata key
   where
-    optFileArg x y = do
+    joinFileArg x y = do
       y' <- y
       case y' of
         Nothing -> return Nothing
-        Just path -> do
+        Just p -> do
+          tPath <- testPath
+          let path = takeDirectory tPath </> p
           dependFile path
-          return (Just (x, path))
+          return (Just [x, path])
 
