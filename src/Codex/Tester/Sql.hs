@@ -8,6 +8,7 @@ module Codex.Tester.Sql (
   ) where
 
 import           Codex.Tester
+import           Data.Char
 import           Data.Maybe
 import           Data.Text(Text)
 import qualified Data.Text as T
@@ -31,7 +32,7 @@ sqlSelectTester = tester "select" $ do
             , "-P" `joinConfArg` "port"
             , "-u" `joinConfArg` "user_guest"
             , "-p" `joinConfArg` "pass_guest"
-            , "-d" `joinArg` getDatabaseName
+            , "-d" `joinArg` getSelectDbName
             ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
@@ -40,49 +41,39 @@ sqlSelectTester = tester "select" $ do
         (args ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
-getDatabaseName :: Tester (Maybe String)
-getDatabaseName = do
+getSelectDbName :: Tester (Maybe String)
+getSelectDbName = do
+  initFilePath <- metadata "db-init-file"
+  case initFilePath of
+    Nothing -> metadata "db-name"
+    Just v -> do
+      testPath' <- testPath
+      let initFilePath' = takeDirectory testPath' </> v
+      dependFile initFilePath'
+      dbName <- do
+        dbPrefix <- maybeConfigured "language.sql.args.prefix"
+        return $ (fromMaybe "" dbPrefix) ++ "_"
+                ++ (map (\x -> if isAlphaNum x then x else '_') testPath')
+      setup $ setupSelectProblem dbName initFilePath'
+      return (Just dbName)
+
+
+setupSelectProblem :: String -> String -> Tester ()
+setupSelectProblem dbName initFilePath = do
   args <- concatArgs
-            [ "-i" `joinMetaArg` "db-init-sql"
-            , "-I" `joinMetaFileArg` "db-init-file"
-            ]
-  case args of
-    [] -> metadata "db-name"
-    _  -> do buildId <- setup (buildSelectProblem args) (cleanSelectProblem args)
-             dbName <- buildIdToDbName buildId
-             return (Just dbName)
-
-
-buildIdToDbName :: BuildId -> Tester (String)
-buildIdToDbName buildId = do
-  dbPrefix <- maybeConfigured "language.sql.args.prefix"
-  case dbPrefix of
-    Nothing -> dbName ""
-    Just v -> dbName v
-  where
-    dbName p = do
-      case show buildId of
-        '-':xs -> return $ p++('_':'_':xs)
-        hash -> return $ p++('_':hash)
-
-
-buildSelectProblem :: [String] -> BuildId -> Tester ()
-buildSelectProblem args buildId = do
-  args' <- concatArgs
-            [ "-h" `joinConfArg` "host"
-            , "-P" `joinConfArg` "port"
-            , "-u" `joinConfArg` "user_schema"
-            , "-p" `fuseConfArg` "pass_schema"
-            ]
-  let args'' = args
-  liftIO $ print ("build"::String, args, args', buildId)
-  return ()
-
-
-cleanSelectProblem :: [String] -> BuildId -> Tester ()
-cleanSelectProblem args buildId =  do
-  liftIO $ print ("clean"::String, args, buildId)
-  return ()
+      [ "-h" `joinConfArg` "host"
+      , "-P" `joinConfArg` "port"
+      , "-u" `joinConfArg` "user_schema"
+      , "-p" `fuseConfArg` "pass_schema"
+      ]
+  let sql = "DROP DATABASE IF EXISTS `"<> dbName <> "`;"
+         <> "CREATE DATABASE `"<> dbName <> "`;"
+         <> "USE `"<> dbName <> "`;"
+         <> "SOURCE "<> initFilePath <> ";"
+  exec <- liftIO $ unsafeExec "mysql" args (T.pack sql)
+  case exec of
+    (ExitSuccess, stdout, stderr) -> liftIO $ print (stdout <> stderr)
+    (_, stdout, stderr)           -> liftIO $ throwIO $ miscError (stdout <> stderr)
 
 
 sqlEditTester :: Tester Result
@@ -165,7 +156,7 @@ concatArgs l = do
   return $ concat (catMaybes l')
 
 
-joinArg :: String -> Tester (OptArg) -> Tester OptArgs
+joinArg :: String -> Tester OptArg -> Tester OptArgs
 joinArg x y = fmap (\v -> [x, v]) <$> y
 
 
