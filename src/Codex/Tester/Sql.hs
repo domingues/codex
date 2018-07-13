@@ -45,7 +45,7 @@ getSelectDbName :: Tester (Maybe String)
 getSelectDbName = do
   initFilePath <- metadata "db-init-file"
   case initFilePath of
-    Nothing -> metadata "db-name"
+    Nothing -> Nothing
     Just v -> do
       testPath' <- testPath
       let initFilePath' = takeDirectory testPath' </> v
