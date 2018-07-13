@@ -106,8 +106,7 @@ metadata key = do
   case lookupFromMeta key meta of
     Nothing -> return Nothing
     Just v -> do
-      addToHash key
-      addToHash v
+      addToHash (key, v)
       return (Just v)
 
 
@@ -122,9 +121,7 @@ metadataFile key = do
       tp <- testPath
       let path = takeDirectory tp </> v
       mt <- liftIO $ D.getModificationTime path
-      addToHash key
-      addToHash v
-      addToHash mt
+      addToHash (key, v, mt)
       return (Just path)
 
 
@@ -137,8 +134,7 @@ maybeConfigured key = do
   case c of
     Nothing -> return Nothing
     Just v -> do
-      addToHash key
-      addToHash v
+      addToHash (key, v)
       return (Just v)
 
 
@@ -149,8 +145,7 @@ configured :: (Hashable a, Configured a) => Name -> Tester a
 configured key = do
   cfg <- testConfig
   v <- liftIO $ Conf.require cfg key
-  addToHash key
-  addToHash v
+  addToHash (key, v)
   return v
 
 
