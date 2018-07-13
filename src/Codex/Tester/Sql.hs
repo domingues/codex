@@ -72,8 +72,8 @@ setupSelectProblem dbName initFilePath = do
          <> "SOURCE "<> initFilePath <> ";"
   exec <- liftIO $ unsafeExec "mysql" args (T.pack sql)
   case exec of
-    (ExitSuccess, stdout, stderr) -> liftIO $ print (stdout <> stderr)
-    (_, stdout, stderr)           -> liftIO $ throwIO $ miscError (stdout <> stderr)
+    (ExitSuccess, _, _) -> return ()
+    (_, stdout, stderr) -> liftIO $ throwIO $ miscError (stdout <> stderr)
 
 
 sqlEditTester :: Tester Result
