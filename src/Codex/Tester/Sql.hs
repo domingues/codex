@@ -56,24 +56,23 @@ getSelectDbName = do
                 ++ (map (\x -> if isAlphaNum x then x else '_') testPath')
       setup $ setupSelectProblem dbName initFilePath'
       return (Just dbName)
-
-
-setupSelectProblem :: String -> String -> Tester ()
-setupSelectProblem dbName initFilePath = do
-  args <- concatArgs
-      [ "-h" `joinConfArg` "host"
-      , "-P" `joinConfArg` "port"
-      , "-u" `joinConfArg` "user_schema"
-      , "-p" `fuseConfArg` "pass_schema"
-      ]
-  let sql = "DROP DATABASE IF EXISTS `"<> dbName <> "`;"
-         <> "CREATE DATABASE `"<> dbName <> "`;"
-         <> "USE `"<> dbName <> "`;"
-         <> "SOURCE "<> initFilePath <> ";"
-  exec <- liftIO $ unsafeExec "mysql" args (T.pack sql)
-  case exec of
-    (ExitSuccess, _, _) -> return ()
-    (_, stdout, stderr) -> liftIO $ throwIO $ miscError (stdout <> stderr)
+  where
+    setupSelectProblem dbName initFilePath = do
+      args <- concatArgs
+          [ "-h" `joinConfArg` "host"
+          , "-P" `joinConfArg` "port"
+          , "-u" `joinConfArg` "user_schema"
+          , "-p" `fuseConfArg` "pass_schema"
+          ]
+      let sql = concat [ "DROP DATABASE IF EXISTS `", dbName, "`;"
+                       , "CREATE DATABASE `", dbName, "`;"
+                       , "USE `", dbName, "`;"
+                       , "SOURCE ", initFilePath, ";"
+                       ]
+      exec <- liftIO $ unsafeExec "mysql" args (T.pack sql)
+      case exec of
+        (ExitSuccess, _, _) -> return ()
+        (_, stdout, stderr) -> liftIO $ throwIO $ miscError (stdout <> stderr)
 
 
 sqlEditTester :: Tester Result
