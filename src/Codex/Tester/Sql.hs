@@ -136,7 +136,7 @@ classify (ExitSuccess, stdout, _)
   | T.isPrefixOf "Memory Limit Exceeded" stdout = memoryLimitExceeded (dropFirstLn stdout)
   where
     dropFirstLn = T.dropWhile (/='\n')
-classify (_, stdout, stderr)             = miscError (stdout <> stderr)
+classify (_, stdout, stderr)                    = miscError (stdout <> stderr)
 
 
 getSqlAnswer :: Tester String
