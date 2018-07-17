@@ -14,6 +14,7 @@ import           Data.Text(Text)
 import qualified Data.Text as T
 import           Control.Exception
 import           Control.Applicative
+import qualified Control.Concurrent.ReadWriteLock as RWL
 import           Codex.Tester.Build
 
 
@@ -32,28 +33,34 @@ sqlSelectTester = tester "select" $ do
             , "-P" `joinConfArg` "port"
             , "-u" `joinConfArg` "user_guest"
             , "-p" `joinConfArg` "pass_guest"
-            , "-d" `joinArg` getSelectDbName
             ]
+  (dbName, rwLock) <- setupSelectProblem
+  let args' = maybe [] (\x->["-d", x]) dbName
   answer <- getSqlAnswer
-  withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
-    withTemp "submit.sql" src $ \submittedFilePath ->
-      classify <$> unsafeExec evaluator
-        (args ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
+  result <- withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
+        withTemp "submit.sql" src $ \submittedFilePath ->
+          classify <$> unsafeExec evaluator
+            (args ++ args' ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
+  releaseBuildLock rwLock
+  return result
+  where
+    releaseBuildLock Nothing   = return ()
+    releaseBuildLock (Just rw) = liftIO $ RWL.releaseRead rw
 
 
-getSelectDbName :: Tester (Maybe String)
-getSelectDbName = do
+setupSelectProblem :: Tester (Maybe String, Maybe RWL.RWLock)
+setupSelectProblem = do
   initFile <- metadataFile "db-init-file"
   case initFile of
-    Nothing -> return Nothing
+    Nothing -> return (Nothing, Nothing)
     Just v -> do
       testPath' <- testPath
       dbName <- do
         dbPrefix <- maybeConfigured "language.sql.args.prefix"
         return $ (fromMaybe "" dbPrefix) ++ "_"
                 ++ (map (\x -> if isAlphaNum x then x else '_') testPath')
-      setup $ setupProblem dbName v
-      return (Just dbName)
+      rw <- setup $ setupProblem dbName v
+      return (Just dbName, Just rw)
   where
     setupProblem dbName initFilePath = do
       args <- concatArgs
