@@ -57,6 +57,7 @@ data App = App
     , _tasks   :: Tasks            -- ^ list of evaluation thread ids
     , _semph   :: QSem             -- ^ semaphore for evaluation scheduling
     , _logger  :: Logger
+    , _buildCache :: BuildCache
    }
 
 makeLenses ''App

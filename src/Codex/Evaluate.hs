@@ -60,6 +60,7 @@ cancelPending = reevaluate []
 evaluatorWith :: Tester Result -> Submission -> Codex (IO ())
 evaluatorWith tester sub = do
   sqlite <- S.getSqliteState
+  buildCache <- gets _buildCache
   evs <- getEvents
   root <- getDocumentRoot
   conf <- getSnapletUserConfig
@@ -75,15 +76,15 @@ evaluatorWith tester sub = do
       Nothing ->
         updateSubmission sqlite sid wrongInterval Valid
       Just timing -> do
-        result <- testerWrapper conf (S.sqliteConn sqlite) filepath code meta tester
+        result <- testerWrapper conf buildCache filepath code meta tester
                   `catch`
                   (\(e::SomeException) ->
                       return (miscError $ T.pack $ show e))
         updateSubmission sqlite sid result timing
 
 -- | set default limits and run a tester
-testerWrapper cfg dbConn path code meta action
-  = fromMaybe invalidTester <$> runTester cfg dbConn meta path code action
+testerWrapper cfg buildCache path code meta action
+  = fromMaybe invalidTester <$> runTester cfg buildCache meta path code action
 
 wrongInterval :: Result
 wrongInterval = miscError "invalid submission interval"

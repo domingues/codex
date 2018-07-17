@@ -24,5 +24,6 @@ extra-deps:
 - snaplet-sqlite-simple-1.0.0.2
 - zip-archive-0.3.0.5
 - sqlite-simple-0.4.12.0
+- concurrent-extra-0.7.0.12
 
 resolver: lts-8.0

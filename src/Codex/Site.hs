@@ -334,6 +334,7 @@ codexInit tester =
     -- create a semaphore for throttling concurrent evaluation threads
     ntasks <- liftIO $ Conf.require conf "system.max_concurrent"
     (semph, tasks) <- liftIO (makeTasks ntasks)
+    cache <- liftIO initBuildCache
     return App { _heist = h
                , _router = r
                , _sess = s
@@ -343,6 +344,7 @@ codexInit tester =
                , _tasks = tasks
                , _semph = semph
                , _logger  = logger
+               , _buildCache = cache
                }
 
 

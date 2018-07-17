@@ -4,6 +4,7 @@ module Codex.Tester (
   -- * module re-exports
   Meta, Code(..),
   lookupFromMeta,
+  initBuildCache,
   module Codex.Tester.Monad,
   module Codex.Tester.Result,
   module Codex.Tester.Utils,
@@ -37,4 +38,4 @@ import           Data.Monoid
 -- renamed for readability
 oneOf :: [Tester a] -> Tester a
 oneOf = foldr (<|>) empty
-  
+

@@ -84,6 +84,7 @@ Executable codex-server
     lens,
     process-extras,
     temporary,
+    concurrent-extra,
     glob-posix
   if flag(development)
     -- build-depends:

@@ -4,42 +4,50 @@ module Codex.Tester.Build (
   setup,
   ) where
 
-import           Codex.Tester
+import           Control.Monad.IO.Class
+import           Codex.Tester.Monad
 import           Control.Concurrent.MVar
-import           Database.SQLite.Simple
+import qualified Control.Concurrent.ReadWriteLock as RWL
+import qualified Data.Map.Strict as Map
 
 
-type BuildId = Int
-data BuildStatus = Ok
-                 | Build BuildId
-                 deriving Show
-
-
-setup :: Tester () -> Tester ()
-setup fBuild = do
-  buildStatus <- getBuildStatus
-  case buildStatus of
-    Ok              -> return ()
-    (Build buildId) -> fBuild >> setProblemBuild buildId
-
-
--- | returns the current build status
-getBuildStatus :: Tester BuildStatus
-getBuildStatus = do
+setup :: Tester () -> Tester (RWL.RWLock)
+setup buildProblem = do
   path <- testPath
-  buildId <- testHash
-  dbConn <- testDbConn
-  qIsBuild <- liftIO $ withMVar dbConn (\conn -> query conn
-        "SELECT build_id FROM builds WHERE path=? and build_id=? LIMIT 1" (path, buildId) :: IO [Only BuildId])
-  case qIsBuild of
-        [] -> return (Build buildId)
-        _  -> return Ok
+  hash <- testHash
+  cache <- acquireCache                            -- lock cache table
+  case Map.lookup path cache of
+    Just (mv, rw) -> do
+      hash' <- liftIO $ takeMVar mv                -- lock curr prob
+      releaseCache cache                           -- release cache table
+      if hash'==hash then do
+        liftIO $ print ("no build"::String)
+        noBuild mv rw hash
+      else do
+        liftIO $ print ("rebuilding"::String)
+        liftIO $ RWL.acquireWrite rw               -- wait until can build
+        build mv rw hash
+    Nothing -> do
+      liftIO $ print ("building"::String)
+      mv <- liftIO newEmptyMVar                    -- lock curr prob
+      rw <- liftIO RWL.newAcquiredWrite            -- init build
+      releaseCache $ Map.insert path (mv, rw) cache-- release cache table
+      build mv rw hash
+  where
+    noBuild mv rw hash = do
+      liftIO $ RWL.acquireRead rw                  -- block building
+      liftIO $ putMVar mv hash                     -- release curr prob
+      return rw -- <- we need to releaseRead when the test finishes
+    build mv rw hash = do
+      buildProblem
+      liftIO $ RWL.releaseWrite rw                 -- build done
+      liftIO $ RWL.acquireRead rw                  -- block building
+      liftIO $ putMVar mv hash                     -- release curr prob
+      return rw -- <- we need to releaseRead when the test finishes
+    acquireCache = do
+      mv <- testBuildCache
+      liftIO $ takeMVar mv
+    releaseCache cache = do
+      mv <- testBuildCache
+      liftIO $ putMVar mv cache
 
-
--- | sets in the database the current problem build to the given build_id
-setProblemBuild :: BuildId -> Tester ()
-setProblemBuild buildId = do
-  path <- testPath
-  dbConn <- testDbConn
-  liftIO $ withMVar dbConn (\conn -> execute conn
-    "INSERT OR REPLACE INTO builds (path, build_id) VALUES (?, ?)" (path, buildId))

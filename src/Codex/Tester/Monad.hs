@@ -9,7 +9,6 @@ module Codex.Tester.Monad (
   maybeConfigured,
   testLimits,
   testConfig,
-  testDbConn,
   testPath,
   testCode,
   testMetadata,
@@ -17,6 +16,9 @@ module Codex.Tester.Monad (
   metadata,
   metadataFile,
   tester,
+  BuildCache,
+  initBuildCache,
+  testBuildCache,
   ) where
 
 
@@ -24,10 +26,12 @@ import           Data.Configurator.Types
 import qualified Data.Configurator as Conf
 
 import           Data.Hashable
+import qualified Data.Map.Strict as Map
 import           Data.Monoid
 import           Control.Applicative
 import           Control.Monad
 import           Control.Concurrent.MVar
+import qualified Control.Concurrent.ReadWriteLock as RWL
 import           Control.Monad.Trans
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.Reader
@@ -37,50 +41,54 @@ import           Codex.Types (Code)
 import           Text.Pandoc (Meta)
 import           Codex.Page
 import           Codex.Tester.Limits
-import           Database.SQLite.Simple (Connection)
 import qualified System.Directory as D
 import           Data.Time.Clock(UTCTime)
 import           System.FilePath
 
 
-type Hash = Int
+type TestHash = Int
+type CacheMap = Map.Map String (MVar TestHash, RWL.RWLock)
+type BuildCache = MVar CacheMap
 
 -- | a monad for testing scripts
 -- allows access to a test environment, IO and failure (i.e. passing)
 newtype Tester a
-  = Tester { unTester :: ReaderT TestEnv (StateT Hash (MaybeT IO)) a }
+  = Tester { unTester :: ReaderT TestEnv (StateT TestState (MaybeT IO)) a }
   deriving (Functor, Monad, Applicative, Alternative, MonadIO)
 
 -- | testing environment
 data TestEnv
    = TestEnv { _testConfig :: Config   -- ^ static configuration file
-             , _testDbConn :: MVar Connection   -- ^ codex database
              , _testMeta :: Meta       -- ^ exercise metadata
              , _testPath :: FilePath   -- ^ file path to exercise page
              , _testCode :: Code       -- ^ submited language & code
              }
+
+data TestState
+   = TestState { _testHash :: TestHash
+               , _testBuildCache :: BuildCache
+               }
 
 instance Hashable UTCTime where
   hashWithSalt s t = hashWithSalt s (show t)
 
 
 -- | run a tester
-runTester :: Config -> MVar Connection -> Meta -> FilePath -> Code -> Tester a
+runTester :: Config -> BuildCache -> Meta -> FilePath -> Code -> Tester a
           -> IO (Maybe a)
-runTester cfg dbConn meta path code action
-  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg dbConn meta path code)) (0::Hash)
+runTester cfg cache meta path code action
+  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg meta path code)) (TestState 0 cache)
 
+initBuildCache :: IO BuildCache
+initBuildCache = newMVar Map.empty
 
 addToHash :: Hashable a => a -> Tester ()
-addToHash v = Tester (lift $ modify (\h -> hashWithSalt h v))
+addToHash v = Tester (lift $ modify (\x -> x {_testHash=hashWithSalt (_testHash x) v}))
 
 
 -- | fetch paramaters from the enviroment
 testConfig :: Tester Config
 testConfig = Tester (asks _testConfig)
-
-testDbConn :: Tester (MVar Connection)
-testDbConn = Tester (asks _testDbConn)
 
 testPath :: Tester FilePath
 testPath = Tester (asks _testPath)
@@ -94,8 +102,11 @@ testMetadata = Tester (asks _testMeta)
 
 -- | returns the test current hash
 -- it is calculated from all the metadata and configurations fetched
-testHash :: Tester Hash
-testHash = Tester (lift get)
+testHash :: Tester TestHash
+testHash = Tester (lift $ gets _testHash)
+
+testBuildCache :: Tester BuildCache
+testBuildCache = Tester (lift $ gets _testBuildCache)
 
 
 -- | fetch a metadata value; return Nothing if key not present
