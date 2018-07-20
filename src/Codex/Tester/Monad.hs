@@ -48,13 +48,13 @@ import           System.FilePath
 
 
 type TestHash = Int
-type CacheMap = Map.Map String (MVar TestHash, RWL.RWLock)
+type CacheMap = Map.Map String (MVar (Either TestHash TestHash, RWL.RWLock))
 type BuildCache = MVar CacheMap
 
 -- | a monad for testing scripts
 -- allows access to a test environment, IO and failure (i.e. passing)
 newtype Tester a
-  = Tester { unTester :: ReaderT TestEnv (StateT TestState (MaybeT IO)) a }
+  = Tester { unTester :: ReaderT TestEnv (StateT TestHash (MaybeT IO)) a }
   deriving (Functor, Monad, Applicative, Alternative, MonadIO)
 
 -- | testing environment
@@ -63,12 +63,8 @@ data TestEnv
              , _testMeta :: Meta       -- ^ exercise metadata
              , _testPath :: FilePath   -- ^ file path to exercise page
              , _testCode :: Code       -- ^ submited language & code
+             , _testBuildCache :: BuildCache
              }
-
-data TestState
-   = TestState { _testHash :: TestHash
-               , _testBuildCache :: BuildCache
-               }
 
 instance Hashable UTCTime where
   hashWithSalt s t = hashWithSalt s (show t)
@@ -78,13 +74,13 @@ instance Hashable UTCTime where
 runTester :: Config -> BuildCache -> Meta -> FilePath -> Code -> Tester a
           -> IO (Maybe a)
 runTester cfg cache meta path code action
-  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg meta path code)) (TestState 0 cache)
+  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg meta path code cache)) 0
 
 initBuildCache :: IO BuildCache
 initBuildCache = newMVar Map.empty
 
 addToHash :: Hashable a => a -> Tester ()
-addToHash v = Tester (lift $ modify (\x -> x {_testHash=hashWithSalt (_testHash x) v}))
+addToHash v = Tester (lift $ modify (\x -> hashWithSalt x v))
 
 
 -- | fetch paramaters from the enviroment
@@ -100,14 +96,14 @@ testCode = Tester (asks _testCode)
 testMetadata :: Tester Meta
 testMetadata = Tester (asks _testMeta)
 
+testBuildCache :: Tester BuildCache
+testBuildCache = Tester (asks _testBuildCache)
+
 
 -- | returns the test current hash
 -- it is calculated from all the metadata and configurations fetched
 testHash :: Tester TestHash
-testHash = Tester (lift $ gets _testHash)
-
-testBuildCache :: Tester BuildCache
-testBuildCache = Tester (lift $ gets _testBuildCache)
+testHash = Tester (lift $ get)
 
 
 -- | fetch a metadata value; return Nothing if key not present

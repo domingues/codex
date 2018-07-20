@@ -32,20 +32,19 @@ sqlSelectTester = tester "select" $ do
     case initFile of
       Nothing -> return ([], id)
       Just f -> do
-        dbName <- do
-          dbPrefix <- maybeConfigured "language.sql.args.prefix"
-          path <- testPath
-          let name = map (\x -> if isAlphaNum x then x else '_') path
-          return $ maybe name (\p -> p ++ "_" ++ name) dbPrefix
-        buildCache <- testBuildCache
         path <- testPath
-        hash <- testHash
         args <- concatArgs
             [ "-h" `joinConfArg` "host"
             , "-P" `joinConfArg` "port"
             , "-u" `joinConfArg` "user_schema"
             , "-p" `fuseConfArg` "pass_schema"
             ]
+        dbName <- do
+          dbPrefix <- maybeConfigured "language.sql.args.prefix"
+          let name = map (\x -> if isAlphaNum x then x else '_') path
+          return $ maybe name (\p -> p ++ "_" ++ name) dbPrefix
+        hash <- testHash
+        buildCache <- testBuildCache
         let run = buildRun buildCache path hash (setupProblem dbName f args)
         return (["-d", dbName], run)
   args <- concatArgs
