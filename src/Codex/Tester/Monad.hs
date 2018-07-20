@@ -17,6 +17,7 @@ module Codex.Tester.Monad (
   metadataFile,
   tester,
   BuildCache,
+  TestHash,
   initBuildCache,
   testBuildCache,
   ) where

@@ -53,31 +53,35 @@ setupSelectProblem = do
   initFile <- metadataFile "db-init-file"
   case initFile of
     Nothing -> return (Nothing, Nothing)
-    Just v -> do
+    Just f -> do
       testPath' <- testPath
       dbName <- do
         dbPrefix <- maybeConfigured "language.sql.args.prefix"
         return $ (fromMaybe "" dbPrefix) ++ "_"
                 ++ (map (\x -> if isAlphaNum x then x else '_') testPath')
-      rw <- setup $ setupProblem dbName v
-      return (Just dbName, Just rw)
-  where
-    setupProblem dbName initFilePath = do
       args <- concatArgs
           [ "-h" `joinConfArg` "host"
           , "-P" `joinConfArg` "port"
           , "-u" `joinConfArg` "user_schema"
           , "-p" `fuseConfArg` "pass_schema"
           ]
+      buildCache <- testBuildCache
+      path <- testPath
+      hash <- testHash
+      rw <- liftIO $ setup buildCache path hash $ setupProblem dbName f args
+      return (Just dbName, Just rw)
+  where
+    setupProblem :: String -> String -> [String] -> IO ()
+    setupProblem dbName initFilePath args = do
       let sql = concat [ "DROP DATABASE IF EXISTS `", dbName, "`;"
                        , "CREATE DATABASE `", dbName, "`;"
                        , "USE `", dbName, "`;"
                        , "SOURCE ", initFilePath, ";"
                        ]
-      exec <- liftIO $ unsafeExec "mysql" args (T.pack sql)
+      exec <- unsafeExec "mysql" args (T.pack sql)
       case exec of
         (ExitSuccess, _, _) -> return ()
-        (_, stdout, stderr) -> liftIO $ throwIO $ miscError (stdout <> stderr)
+        (_, stdout, stderr) -> throwIO $ miscError (stdout <> stderr)
 
 
 sqlEditTester :: Tester Result

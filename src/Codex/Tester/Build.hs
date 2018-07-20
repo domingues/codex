@@ -9,45 +9,55 @@ import           Codex.Tester.Monad
 import           Control.Concurrent.MVar
 import qualified Control.Concurrent.ReadWriteLock as RWL
 import qualified Data.Map.Strict as Map
+import           Control.Exception
 
 
-setup :: Tester () -> Tester (RWL.RWLock)
-setup buildProblem = do
-  path <- testPath
-  hash <- testHash
-  cache <- acquireCache                            -- lock cache table
+buildRun :: IO (RWL.RWLock) -> IO a -> IO a
+buildRun build run = do
+  rw <- build
+  r <- run
+  RWL.releaseRead rw
+  return r
+
+
+setup :: BuildCache -> String -> TestHash -> IO () -> IO (RWL.RWLock)
+setup buildCache path hash buildProblem = do
+  cache <- takeMVar buildCache                            -- lock cache table
   case Map.lookup path cache of
     Just (mv, rw) -> do
-      hash' <- liftIO $ takeMVar mv                -- lock curr prob
-      releaseCache cache                           -- release cache table
+      hash' <- takeMVar mv                                -- lock curr prob
+      putMVar buildCache $ cache                          -- release cache table
       if hash'==hash then do
-        liftIO $ print ("no build"::String)
-        noBuild mv rw hash
+        print ("no build"::String)
+        putMVar mv hash                                   -- release curr prob
+        RWL.acquireRead rw                                -- block building
+        return rw -- releaseRead after the test finishes
       else do
-        liftIO $ print ("rebuilding"::String)
-        liftIO $ RWL.acquireWrite rw               -- wait until can build
-        build mv rw hash
+        print ("rebuilding"::String)
+        RWL.acquireWrite rw                               -- wait until can build
+        onException (do
+            buildProblem
+            RWL.releaseWrite rw                           -- build done
+            putMVar mv hash                               -- release curr prob
+          ) (do
+            RWL.releaseWrite rw                           -- build done
+            putMVar mv hash'                              -- build fail
+          )
+        RWL.acquireRead rw                                -- block building
+        return rw -- releaseRead after the test finishes
     Nothing -> do
-      liftIO $ print ("building"::String)
-      mv <- liftIO newEmptyMVar                    -- lock curr prob
-      rw <- liftIO RWL.newAcquiredWrite            -- init build
-      releaseCache $ Map.insert path (mv, rw) cache-- release cache table
-      build mv rw hash
-  where
-    noBuild mv rw hash = do
-      liftIO $ RWL.acquireRead rw                  -- block building
-      liftIO $ putMVar mv hash                     -- release curr prob
-      return rw -- <- we need to releaseRead when the test finishes
-    build mv rw hash = do
-      buildProblem
-      liftIO $ RWL.releaseWrite rw                 -- build done
-      liftIO $ RWL.acquireRead rw                  -- block building
-      liftIO $ putMVar mv hash                     -- release curr prob
-      return rw -- <- we need to releaseRead when the test finishes
-    acquireCache = do
-      mv <- testBuildCache
-      liftIO $ takeMVar mv
-    releaseCache cache = do
-      mv <- testBuildCache
-      liftIO $ putMVar mv cache
+      print ("building"::String)
+      mv <- newEmptyMVar                                  -- lock curr prob
+      rw <- RWL.newAcquiredWrite                          -- init build
+      putMVar buildCache $ Map.insert path (mv, rw) cache -- release cache table
+      onException (do
+          buildProblem
+          RWL.releaseWrite rw                             -- build done
+          putMVar mv hash                                 -- release curr prob
+        ) (do
+          RWL.releaseWrite rw                             -- build done
+          putMVar mv 0                                    -- build fail
+        )
+      RWL.acquireRead rw                                  -- block building
+      return rw -- releaseRead after the test finishes
 
