@@ -1,10 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Codex.Tester.Build (
-  setup,
+  buildRun,
   ) where
 
-import           Control.Monad.IO.Class
 import           Codex.Tester.Monad
 import           Control.Concurrent.MVar
 import qualified Control.Concurrent.ReadWriteLock as RWL
@@ -12,11 +11,11 @@ import qualified Data.Map.Strict as Map
 import           Control.Exception
 
 
-buildRun :: IO (RWL.RWLock) -> IO a -> IO a
-buildRun build run = do
-  rw <- build
+buildRun :: BuildCache -> String -> TestHash -> IO () -> IO a -> IO a
+buildRun buildCache path hash buildProblem run = do
+  rw <- setup buildCache path hash buildProblem
   r <- run
-  RWL.releaseRead rw
+  finally run (RWL.releaseRead rw)
   return r
 
 

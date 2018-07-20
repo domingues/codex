@@ -14,7 +14,6 @@ import           Data.Text(Text)
 import qualified Data.Text as T
 import           Control.Exception
 import           Control.Applicative
-import qualified Control.Concurrent.ReadWriteLock as RWL
 import           Codex.Tester.Build
 
 
@@ -28,48 +27,38 @@ sqlSelectTester = tester "select" $ do
   guard (lang == "sql")
   ---
   evaluator <- configured "language.sql.evaluator.select"
+  (argsFromBuild, run) <- do
+    initFile <- metadataFile "db-init-file"
+    case initFile of
+      Nothing -> return ([], id)
+      Just f -> do
+        dbName <- do
+          dbPrefix <- maybeConfigured "language.sql.args.prefix"
+          path <- testPath
+          let name = map (\x -> if isAlphaNum x then x else '_') path
+          return $ maybe name (\p -> p ++ "_" ++ name) dbPrefix
+        buildCache <- testBuildCache
+        path <- testPath
+        hash <- testHash
+        args <- concatArgs
+            [ "-h" `joinConfArg` "host"
+            , "-P" `joinConfArg` "port"
+            , "-u" `joinConfArg` "user_schema"
+            , "-p" `fuseConfArg` "pass_schema"
+            ]
+        let run = buildRun buildCache path hash (setupProblem dbName f args)
+        return (["-d", dbName], run)
   args <- concatArgs
             [ "-H" `joinConfArg` "host"
             , "-P" `joinConfArg` "port"
             , "-u" `joinConfArg` "user_guest"
             , "-p" `joinConfArg` "pass_guest"
             ]
-  (dbName, rwLock) <- setupSelectProblem
-  let args' = maybe [] (\x->["-d", x]) dbName
   answer <- getSqlAnswer
-  result <- withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
+  liftIO $ run $ withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
         withTemp "submit.sql" src $ \submittedFilePath ->
           classify <$> unsafeExec evaluator
-            (args ++ args' ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
-  releaseBuildLock rwLock
-  return result
-  where
-    releaseBuildLock Nothing   = return ()
-    releaseBuildLock (Just rw) = liftIO $ RWL.releaseRead rw
-
-
-setupSelectProblem :: Tester (Maybe String, Maybe RWL.RWLock)
-setupSelectProblem = do
-  initFile <- metadataFile "db-init-file"
-  case initFile of
-    Nothing -> return (Nothing, Nothing)
-    Just f -> do
-      testPath' <- testPath
-      dbName <- do
-        dbPrefix <- maybeConfigured "language.sql.args.prefix"
-        return $ (fromMaybe "" dbPrefix) ++ "_"
-                ++ (map (\x -> if isAlphaNum x then x else '_') testPath')
-      args <- concatArgs
-          [ "-h" `joinConfArg` "host"
-          , "-P" `joinConfArg` "port"
-          , "-u" `joinConfArg` "user_schema"
-          , "-p" `fuseConfArg` "pass_schema"
-          ]
-      buildCache <- testBuildCache
-      path <- testPath
-      hash <- testHash
-      rw <- liftIO $ setup buildCache path hash $ setupProblem dbName f args
-      return (Just dbName, Just rw)
+            (args ++ argsFromBuild ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
   where
     setupProblem :: String -> String -> [String] -> IO ()
     setupProblem dbName initFilePath args = do
