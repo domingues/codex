@@ -19,30 +19,23 @@ buildRun buildCache path hash buildProblem run = do
   finally run (RWL.releaseRead rw)
 
 
-setup :: BuildCache -> String -> TestHash -> IO () -> IO (RWL.RWLock)
+setup :: BuildCache -> String -> TestHash -> IO () -> IO RWL.RWLock
 setup buildCache path hash buildProblem = do
   cache <- takeMVar buildCache -- lock cache table
   case Map.lookup path cache of
     Just mv -> do
       (buildStatus, rw) <- takeMVar mv -- lock curr prob
-      putMVar buildCache $ cache -- release cache table
+      putMVar buildCache cache -- release cache table
       let noBuild = do
           putMVar mv (Right hash, rw) -- release curr prob
           return rw
       let rebuild = do
           RWL.acquireWrite rw -- wait until can build
-          onException (do
-             buildProblem
-             RWL.releaseWrite rw -- build done
-             putMVar mv (Right hash, rw) -- release curr prob
-            ) (do
-             RWL.releaseWrite rw -- build done
-             putMVar mv (Left hash, rw) -- build fail, release curr prob
-            )
+          build mv hash rw
           return rw
       let noRebuild = do
           putMVar mv (Left hash, rw) -- release curr prob
-          throwIO $ miscError "previous build failed"
+          throwIO $ miscError "previous build attempt failed"
       case buildStatus of
         Right oldHash | oldHash==hash -> noBuild
                       | otherwise     -> rebuild
@@ -52,6 +45,10 @@ setup buildCache path hash buildProblem = do
       mv <- newEmptyMVar -- lock curr prob
       rw <- RWL.newAcquiredWrite -- init build
       putMVar buildCache $ Map.insert path mv cache -- release cache table
+      build mv hash rw
+      return rw
+  where
+    build mv hash rw = do
       onException (do
           buildProblem
           RWL.releaseWrite rw -- build done
@@ -60,5 +57,4 @@ setup buildCache path hash buildProblem = do
           RWL.releaseWrite rw -- build done
           putMVar mv (Left hash, rw) -- build fail, release curr prob
         )
-      return rw
 

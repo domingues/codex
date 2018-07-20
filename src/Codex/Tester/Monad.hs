@@ -103,7 +103,7 @@ testBuildCache = Tester (asks _testBuildCache)
 -- | returns the test current hash
 -- it is calculated from all the metadata and configurations fetched
 testHash :: Tester TestHash
-testHash = Tester (lift $ get)
+testHash = Tester (lift get)
 
 
 -- | fetch a metadata value; return Nothing if key not present
