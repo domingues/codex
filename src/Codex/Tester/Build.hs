@@ -16,7 +16,7 @@ buildRun :: BuildCache -> String -> TestHash -> IO () -> IO a -> IO a
 buildRun buildCache path hash buildProblem run = do
   rw <- setup buildCache path hash buildProblem
   RWL.acquireRead rw -- block building
-  finally run (RWL.releaseRead rw)
+  run `finally` RWL.releaseRead rw
 
 
 setup :: BuildCache -> String -> TestHash -> IO () -> IO RWL.RWLock
@@ -31,7 +31,7 @@ setup buildCache path hash buildProblem = do
           return rw
       let rebuild = do
           RWL.acquireWrite rw -- wait until can build
-          build mv hash rw
+          build mv rw
           return rw
       let noRebuild = do
           putMVar mv (Left hash, rw) -- release curr prob
@@ -45,16 +45,15 @@ setup buildCache path hash buildProblem = do
       mv <- newEmptyMVar -- lock curr prob
       rw <- RWL.newAcquiredWrite -- init build
       putMVar buildCache $ Map.insert path mv cache -- release cache table
-      build mv hash rw
+      build mv rw
       return rw
   where
-    build mv hash rw = do
-      onException (do
-          buildProblem
-          RWL.releaseWrite rw -- build done
-          putMVar mv (Right hash, rw) -- release curr prob
-        ) (do
-          RWL.releaseWrite rw -- build done
-          putMVar mv (Left hash, rw) -- build fail, release curr prob
-        )
+    build mv rw = do
+        buildProblem
+        RWL.releaseWrite rw -- build done
+        putMVar mv (Right hash, rw) -- release curr prob
+      `onException` do
+        RWL.releaseWrite rw -- build done
+        putMVar mv (Left hash, rw) -- build fail, release curr prob
+
 
