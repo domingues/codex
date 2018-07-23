@@ -18,7 +18,6 @@ buildRun build run = do
   cache <- testBuildCache
   path <- testPath
   hash <- testHash
-  liftIO $ print (hash)
   liftIO $ buildRun' cache path hash build run
 
 
@@ -41,7 +40,6 @@ buildRun' buildCache path hash buildProblem runTest = do
       build mv rw -- new build
   where
     build mv rw = do
-      print ("build" :: String)
       RWL.acquireWrite rw -- wait until can build
       buildProblem
       RWL.releaseWrite rw -- build done
@@ -50,7 +48,6 @@ buildRun' buildCache path hash buildProblem runTest = do
         RWL.releaseWrite rw -- build done
         putMVar mv (Left hash, rw) -- build fail
     run mv rw = do
-      print ("run" :: String)
       RWL.acquireRead rw -- block building
       putMVar mv (Right hash, rw) -- release curr prob
       runTest `finally` RWL.releaseRead rw
