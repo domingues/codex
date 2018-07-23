@@ -30,9 +30,8 @@ sqlSelectTester = tester "select" $ do
   (argsFromBuild, run) <- do
     initFile <- metadataFile "db-init-file"
     case initFile of
-      Nothing -> return ([], id)
+      Nothing -> return ([], liftIO)
       Just f -> do
-        path <- testPath
         args <- concatArgs
             [ "-h" `joinConfArg` "host"
             , "-P" `joinConfArg` "port"
@@ -40,12 +39,11 @@ sqlSelectTester = tester "select" $ do
             , "-p" `fuseConfArg` "pass_schema"
             ]
         dbName <- do
+          path <- testPath
           dbPrefix <- maybeConfigured "language.sql.args.prefix"
           let name = map (\x -> if isAlphaNum x then x else '_') path
           return $ maybe name (\p -> p ++ "_" ++ name) dbPrefix
-        hash <- testHash
-        buildCache <- testBuildCache
-        let run = buildRun buildCache path hash (setupProblem dbName f args)
+        let run = buildRun (setupProblem dbName f args)
         return (["-d", dbName], run)
   args <- concatArgs
             [ "-H" `joinConfArg` "host"
@@ -54,7 +52,7 @@ sqlSelectTester = tester "select" $ do
             , "-p" `joinConfArg` "pass_guest"
             ]
   answer <- getSqlAnswer
-  liftIO $ run $ withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
+  run $ withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
         withTemp "submit.sql" src $ \submittedFilePath ->
           classify <$> unsafeExec evaluator
             (args ++ argsFromBuild ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
