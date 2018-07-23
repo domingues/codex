@@ -52,9 +52,9 @@ sqlSelectTester = tester "select" $ do
             ]
   answer <- getSqlAnswer
   run $ withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
-        withTemp "submit.sql" src $ \submittedFilePath ->
-          classify <$> unsafeExec evaluator
-            (args ++ dbNameArg ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
+    withTemp "submit.sql" src $ \submittedFilePath ->
+      classify <$> unsafeExec evaluator
+        (args ++ dbNameArg ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
   where
     setupProblem :: String -> String -> [String] -> IO ()
     setupProblem dbName initFilePath args = do
