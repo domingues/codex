@@ -12,10 +12,11 @@ module Codex.Tester.Monad (
   testPath,
   testCode,
   testMetadata,
-  testHash,
   metadata,
-  metadataFile,
-  tester,
+  testHash,
+  dependsMetadata,
+  dependsMetadataFile,
+  dependsMaybeConfigured,
   BuildCache,
   TestHash,
   initBuildCache,
@@ -30,7 +31,6 @@ import           Data.Hashable
 import qualified Data.Map.Strict as Map
 import           Data.Monoid
 import           Control.Applicative
-import           Control.Monad
 import           Control.Concurrent.MVar
 import qualified Control.Concurrent.ReadWriteLock as RWL
 import           Control.Monad.Trans
@@ -44,7 +44,6 @@ import           Codex.Page
 import           Codex.Tester.Limits
 import qualified System.Directory as D
 import           Data.Time.Clock(UTCTime)
-import           System.FilePath
 
 
 type TestHash = Int
@@ -107,54 +106,61 @@ testHash = Tester (lift get)
 
 
 -- | fetch a metadata value; return Nothing if key not present
--- adds it key and value to the problem hash
-metadata :: (Hashable a, FromMetaValue a) => String -> Tester (Maybe a)
+metadata :: FromMetaValue a => String -> Tester (Maybe a)
 metadata key = do
   meta <- testMetadata
-  case lookupFromMeta key meta of
-    Nothing -> return Nothing
-    Just v -> do
-      addToHash (key, v)
-      return (Just v)
-
-
--- | fetch a metadata absolute file path; return Nothing if key not present
--- adds it key, value and file modification date to the problem hash
-metadataFile :: String -> Tester (Maybe FilePath)
-metadataFile key = do
-  meta <- testMetadata
-  case lookupFromMeta key meta of
-    Nothing -> return Nothing
-    Just v -> do
-      tp <- testPath
-      let path = takeDirectory tp </> v
-      mt <- liftIO $ D.getModificationTime path
-      addToHash (key, v, mt)
-      return (Just path)
+  return (lookupFromMeta key meta)
 
 
 -- | fetch a configured value; return Nothing if key not present
--- adds it key and value to the problem hash
-maybeConfigured :: (Hashable a, Configured a) => Name -> Tester (Maybe a)
+maybeConfigured :: Configured a => Name -> Tester (Maybe a)
 maybeConfigured key = do
   cfg <- testConfig
-  c <- liftIO $ Conf.lookup cfg key
-  case c of
+  liftIO $ Conf.lookup cfg key
+
+-- | fetch a configuration value
+-- throws an exception if key is not present
+configured :: Configured a => Name -> Tester a
+configured key = do
+  cfg <- testConfig
+  liftIO $ Conf.require cfg key
+
+
+-- | build depends on metadata key-value
+-- adds it key and value to the problem hash
+dependsMetadata :: (Hashable a, FromMetaValue a) => String -> Tester (Maybe a)
+dependsMetadata key = do
+  value <- metadata key
+  case value of
     Nothing -> return Nothing
     Just v -> do
       addToHash (key, v)
       return (Just v)
 
 
--- | fetch a configuration value
--- throws an exception if key is not present
+-- | build depends on metadata key-value-file
+-- adds it key, value, and file modification date to the problem hash
+dependsMetadataFile :: String -> Tester (Maybe FilePath)
+dependsMetadataFile key = do
+  value <- metadata key
+  case value of
+    Nothing -> return Nothing
+    Just v -> do
+      mt <- liftIO $ D.getModificationTime v
+      addToHash (key, v, mt)
+      return (Just v)
+
+
+-- | build depends on config key-value
 -- adds it key and value to the problem hash
-configured :: (Hashable a, Configured a) => Name -> Tester a
-configured key = do
-  cfg <- testConfig
-  v <- liftIO $ Conf.require cfg key
-  addToHash (key, v)
-  return v
+dependsMaybeConfigured :: (Hashable a, Configured a) => Name -> Tester (Maybe a)
+dependsMaybeConfigured key = do
+  value <- maybeConfigured key
+  case value of
+    Nothing -> return Nothing
+    Just v -> do
+      addToHash (key, v)
+      return (Just v)
 
 
 -- | get configured limits from the tester environment
@@ -168,9 +174,6 @@ testLimits key = do
     return (spec <> def)
 
 
--- | label a tester and ignore submissions that don't match
-tester :: String -> Tester a -> Tester a
-tester name cont = do
-  t <- metadata "tester"
-  guard (t == Just name)
-  cont
+
+
+

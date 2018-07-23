@@ -15,6 +15,7 @@ import           Codex.Tester.Result (miscError)
 
 buildRun :: IO () -> IO a -> Tester a
 buildRun build run = do
+  dependsMetadata "tester" :: Tester (Maybe String)
   cache <- testBuildCache
   path <- testPath
   hash <- testHash
