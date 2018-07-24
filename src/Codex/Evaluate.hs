@@ -1,5 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Codex.Evaluate(
   -- * evaluate a single submission
@@ -27,7 +28,7 @@ import           Codex.Utils
 import           Codex.Page
 import           Codex.Submission
 import           Codex.Tester
-import           Codex.Interval
+import           Codex.Time
 
 
 
@@ -58,20 +59,30 @@ cancelPending = reevaluate []
 -- runs code tester in separate thread
 -- uses a semaphore for limiting concurrency 
 evaluatorWith :: Tester Result -> Submission -> Codex (IO ())
-evaluatorWith tester sub = do
+evaluatorWith tester Submission{..} = do
   sqlite <- S.getSqliteState
   buildCache <- gets _buildCache
-  evs <- getEvents
+  events <- getEvents
   root <- getDocumentRoot
   conf <- getSnapletUserConfig
-  let filepath = root </> submitPath sub  -- ^ file path to exercise 
-  let sid = submitId sub                  -- ^ submission number
-  let code = submitCode sub               -- ^ program code
-  return $ do                             -- ^ return evaluation IO action
-    tz <- getCurrentTimeZone
+  return $ do                           -- ^ return evaluation IO action
+    let filepath = root </> submitPath  -- ^ file path to exercise
     meta <- pageMeta <$> readMarkdownFile filepath
-    let opt = rankTime (submitTime sub) <$>
-              evalI tz evs (metaInterval meta)
+    tz <- getCurrentTimeZone
+    let optInt = evalInterval tz events (metaInterval meta)
+    case optInt of
+      Left err ->
+        updateSubmission sqlite submitId (wrongInterval err) Valid
+      Right int -> do
+        let timing = timeInterval submitTime int
+        result <- testerWrapper conf buildCache filepath submitCode meta tester
+                  `catch`
+                  (\(e::SomeException) ->
+                      return (miscError $ T.pack $ show e))
+        updateSubmission sqlite submitId result timing
+
+-- let opt = rankTime submitTime <$> evalI tz evs (metaInterval meta)
+{-
     case opt of
       Nothing ->
         updateSubmission sqlite sid wrongInterval Valid
@@ -81,13 +92,14 @@ evaluatorWith tester sub = do
                   (\(e::SomeException) ->
                       return (miscError $ T.pack $ show e))
         updateSubmission sqlite sid result timing
+-}
 
 -- | set default limits and run a tester
 testerWrapper cfg buildCache path code meta action
   = fromMaybe invalidTester <$> runTester cfg buildCache meta path code action
 
-wrongInterval :: Result
-wrongInterval = miscError "invalid submission interval"
+wrongInterval :: String -> Result
+wrongInterval msg = miscError ("invalid metadata: " <> T.pack msg)
  
 invalidTester :: Result
 invalidTester = miscError "no acceptable tester configured"
