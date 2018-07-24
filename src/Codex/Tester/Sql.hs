@@ -1,19 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Codex.Tester.Sql (
-  sqlTester,
-  sqlSelectTester,
-  sqlEditTester,
-  sqlSchemaTester,
+  sqlTester
   ) where
 
 import           Codex.Tester
-import           Data.Char
-import           Data.Text(Text)
-import qualified Data.Text as T
-import           Control.Exception
 import           Control.Applicative
-import           Codex.Tester.Build
+import           Control.Exception
+import           Data.Char
+import           Data.Text           (Text)
+import qualified Data.Text           as T
 
 
 sqlTester :: Tester Result
@@ -27,16 +23,19 @@ sqlSelectTester = tester "select" $ do
   ---
   evaluator <- configured "language.sql.evaluator.select"
   (dbNameArg, run) <- do
-    initFile <- dependsMetadataFile "db-init-file"
+    initFile <- metadata "db-init-file"
     case initFile of
       Nothing -> return ([], liftIO)
       Just file -> do
-        args <- getDependsOptConfArgs "language.sql.args"
-                  [ ("-h", (\a b->[a, b]), "host")
-                  , ("-P", (\a b->[a, b]), "port")
-                  , ("-u", (\a b->[a, b]), "user_schema")
-                  , ("-p", (\a b->[a++b]), "pass_schema")
+        dependsOn ("db-init-file" :: String)
+        dependsOnFile file
+        args <- getOptConfArgs "language.sql.args"
+                  [ ("-h", "host")
+                  , ("-P", "port")
+                  , ("-u", "user_schema")
+                  , ("-p", "pass_schema")
                   ]
+        dependsOn args
         dbName <- do
           path <- testPath
           dbPrefix <- maybeConfigured "language.sql.args.prefix"
@@ -133,15 +132,6 @@ getOptMetaArgs opts
   = concat <$> mapM optMetaArg opts
   where
     optMetaArg (opt,key) = maybe [] (\x -> [opt, x]) <$> metadata key
-
-
-getDependsOptConfArgs :: Text -> [(String, String->String->[String], Text)] -> Tester [String]
-getDependsOptConfArgs prefix opts =
-  concat <$> mapM optConfArg opts
-  where
-    optConfArg (opt, glue, key) = do
-      cnf <- dependsMaybeConfigured (prefix<>"."<>key)
-      return $ maybe [] (opt `glue`) cnf
 
 
 classify :: (ExitCode, Text, Text) -> Result

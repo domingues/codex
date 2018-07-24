@@ -1,6 +1,6 @@
-{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings          #-}
 
 module Codex.Tester.Monad (
   Tester,
@@ -13,42 +13,34 @@ module Codex.Tester.Monad (
   testCode,
   testMetadata,
   metadata,
-  testHash,
-  dependsMetadata,
-  dependsMetadataFile,
-  dependsMaybeConfigured,
   BuildCache,
-  TestHash,
   initBuildCache,
-  testBuildCache,
+  buildRun,
+  dependsOn,
+  dependsOnFile,
   ) where
 
 
-import           Data.Configurator.Types
-import qualified Data.Configurator as Conf
-
-import           Data.Hashable
-import qualified Data.Map.Strict as Map
-import           Data.Monoid
+import           Codex.Page
+import           Codex.Tester.Limits
+import           Codex.Types                      (Code)
 import           Control.Applicative
 import           Control.Concurrent.MVar
 import qualified Control.Concurrent.ReadWriteLock as RWL
+import           Control.Exception
 import           Control.Monad.Trans
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.Reader
 import           Control.Monad.Trans.State
+import qualified Data.Configurator                as Conf
+import           Data.Configurator.Types
+import           Data.Hashable
+import qualified Data.Map.Strict                  as Map
+import           Data.Monoid
+import           Data.Time.Clock                  (UTCTime)
+import qualified System.Directory                 as D
+import           Text.Pandoc                      (Meta)
 
-import           Codex.Types (Code)
-import           Text.Pandoc (Meta)
-import           Codex.Page
-import           Codex.Tester.Limits
-import qualified System.Directory as D
-import           Data.Time.Clock(UTCTime)
-
-
-type TestHash = Int
-type CacheMap = Map.Map String (MVar (Either TestHash TestHash, RWL.RWLock))
-type BuildCache = MVar CacheMap
 
 -- | a monad for testing scripts
 -- allows access to a test environment, IO and failure (i.e. passing)
@@ -58,15 +50,12 @@ newtype Tester a
 
 -- | testing environment
 data TestEnv
-   = TestEnv { _testConfig :: Config   -- ^ static configuration file
-             , _testMeta :: Meta       -- ^ exercise metadata
-             , _testPath :: FilePath   -- ^ file path to exercise page
-             , _testCode :: Code       -- ^ submited language & code
+   = TestEnv { _testConfig     :: Config     -- ^ static configuration file
+             , _testMeta       :: Meta       -- ^ exercise metadata
+             , _testPath       :: FilePath   -- ^ file path to exercise page
+             , _testCode       :: Code       -- ^ submited language & code
              , _testBuildCache :: BuildCache
              }
-
-instance Hashable UTCTime where
-  hashWithSalt s t = hashWithSalt s (show t)
 
 
 -- | run a tester
@@ -74,12 +63,6 @@ runTester :: Config -> BuildCache -> Meta -> FilePath -> Code -> Tester a
           -> IO (Maybe a)
 runTester cfg cache meta path code action
   = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg meta path code cache)) 0
-
-initBuildCache :: IO BuildCache
-initBuildCache = newMVar Map.empty
-
-addToHash :: Hashable a => a -> Tester ()
-addToHash v = Tester (lift $ modify (\x -> hashWithSalt x v))
 
 
 -- | fetch paramaters from the enviroment
@@ -94,15 +77,6 @@ testCode = Tester (asks _testCode)
 
 testMetadata :: Tester Meta
 testMetadata = Tester (asks _testMeta)
-
-testBuildCache :: Tester BuildCache
-testBuildCache = Tester (asks _testBuildCache)
-
-
--- | returns the test current hash
--- it is calculated from all the metadata and configurations fetched
-testHash :: Tester TestHash
-testHash = Tester (lift get)
 
 
 -- | fetch a metadata value; return Nothing if key not present
@@ -126,43 +100,6 @@ configured key = do
   liftIO $ Conf.require cfg key
 
 
--- | build depends on metadata key-value
--- adds it key and value to the problem hash
-dependsMetadata :: (Hashable a, FromMetaValue a) => String -> Tester (Maybe a)
-dependsMetadata key = do
-  value <- metadata key
-  case value of
-    Nothing -> return Nothing
-    Just v -> do
-      addToHash (key, v)
-      return (Just v)
-
-
--- | build depends on metadata key-value-file
--- adds it key, value, and file modification date to the problem hash
-dependsMetadataFile :: String -> Tester (Maybe FilePath)
-dependsMetadataFile key = do
-  value <- metadata key
-  case value of
-    Nothing -> return Nothing
-    Just v -> do
-      mt <- liftIO $ D.getModificationTime v
-      addToHash (key, v, mt)
-      return (Just v)
-
-
--- | build depends on config key-value
--- adds it key and value to the problem hash
-dependsMaybeConfigured :: (Hashable a, Configured a) => Name -> Tester (Maybe a)
-dependsMaybeConfigured key = do
-  value <- maybeConfigured key
-  case value of
-    Nothing -> return Nothing
-    Just v -> do
-      addToHash (key, v)
-      return (Just v)
-
-
 -- | get configured limits from the tester environment
 -- overrides default config with the specific one
 testLimits :: Name -> Tester Limits
@@ -174,6 +111,76 @@ testLimits key = do
     return (spec <> def)
 
 
+--
+-- hashes and build system
+--
+instance Hashable UTCTime where
+  hashWithSalt s t = hashWithSalt s (show t)
+
+type TestHash = Int
+type BuildCache
+  = MVar (Map.Map String (MVar (Either TestHash TestHash, RWL.RWLock)))
 
 
+-- | create a BuildCache
+initBuildCache :: IO BuildCache
+initBuildCache = newMVar Map.empty
+
+
+-- | adds value to the problem hash
+dependsOn :: Hashable a => a -> Tester ()
+dependsOn value = Tester (lift $ modify (\x -> hashWithSalt x value))
+
+
+-- | adds path, and file modification date to the problem hash
+dependsOnFile :: String -> Tester ()
+dependsOnFile path = do
+  mt <- liftIO $ D.getModificationTime path
+  dependsOn (path, mt)
+
+
+-- | run a test, build if necessary
+buildRun :: IO () -> IO a -> Tester a
+buildRun buildProblem runTest = do
+  tester <- metadata "tester" :: Tester (Maybe String)
+  dependsOn ("tester" :: String, tester)
+  buildCache <- Tester (asks _testBuildCache)
+  hash <- Tester (lift get)
+  path <- testPath
+  liftIO $ buildRunIO buildCache path hash buildProblem runTest
+
+
+buildRunIO :: BuildCache -> String -> TestHash -> IO () -> IO a -> IO a
+buildRunIO buildCache path hash buildProblem runTest = do
+  cache <- takeMVar buildCache -- lock cache table
+  case Map.lookup path cache of
+    Just mv -> do
+      (buildStatus, rw) <- takeMVar mv -- lock curr prob
+      putMVar buildCache cache -- release cache table
+      case buildStatus of
+        Right oldHash | oldHash==hash -> run mv rw -- no build
+                      | otherwise     -> build mv rw -- rebuild
+        Left oldHash  | oldHash==hash -> noRebuild mv rw
+                      | otherwise     -> build mv rw -- rebuild
+    Nothing -> do
+      mv <- newEmptyMVar -- lock curr prob
+      putMVar buildCache $ Map.insert path mv cache -- release cache table
+      rw <- RWL.new
+      build mv rw -- new build
+  where
+    build mv rw = do
+      RWL.acquireWrite rw -- wait until can build
+      buildProblem
+      RWL.releaseWrite rw -- build done
+      run mv rw -- build success
+      `onException` do
+        RWL.releaseWrite rw -- build done
+        putMVar mv (Left hash, rw) -- build fail
+    run mv rw = do
+      RWL.acquireRead rw -- block building
+      putMVar mv (Right hash, rw) -- release curr prob
+      runTest `finally` RWL.releaseRead rw
+    noRebuild mv rw = do
+      putMVar mv (Left hash, rw) -- release curr prob
+      throwIO $ AssertionFailed "Previous build attempt failed."
 
