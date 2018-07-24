@@ -23,32 +23,32 @@ sqlSelectTester = tester "select" $ do
   ---
   evaluator <- configured "language.sql.evaluator.select"
   (dbNameArg, run) <- do
-    initFile <- metadata "db-init-file"
+    initFile <- metadataFile "db-init-file"
     case initFile of
       Nothing -> return ([], liftIO)
       Just file -> do
         dependsOn ("db-init-file" :: String)
         dependsOnFile file
-        args <- getOptConfArgs "language.sql.args"
-                  [ ("-h", "host")
-                  , ("-P", "port")
-                  , ("-u", "user_schema")
-                  , ("-p", "pass_schema")
-                  ]
+        args <- concat <$> sequence [
+                  joinArg "-h" <$> confArg "host"
+                , joinArg "-P" <$> confArg "port"
+                , joinArg "-u" <$> confArg "user_schema"
+                , fuseArg "-p" <$> confArg "pass_schema"
+                ]
         dependsOn args
         dbName <- do
           path <- testPath
-          dbPrefix <- maybeConfigured "language.sql.args.prefix"
+          dbPrefix <- confArg "prefix"
           let name = map (\x -> if isAlphaNum x then x else '_') path
           return $ maybe name (\p -> p ++ "_" ++ name) dbPrefix
         let run = buildRun (setupProblem dbName file args)
         return (["-d", dbName], run)
-  args <- getOptConfArgs "language.sql.args"
-            [ ("-H", "host")
-            , ("-P", "port")
-            , ("-u", "user_guest")
-            , ("-p", "pass_guest")
-            ]
+  args <- concat <$> sequence [
+            joinArg "-H" <$> confArg "host"
+          , joinArg "-P" <$> confArg "port"
+          , joinArg "-u" <$> confArg "user_guest"
+          , joinArg "-p" <$> confArg "pass_guest"
+          ]
   answer <- getSqlAnswer
   run $ withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath ->
@@ -74,24 +74,22 @@ sqlEditTester = tester "edit" $ do
   guard (lang == "sql")
   ---
   evaluator <- configured "language.sql.evaluator.edit"
-  confArgs <- getOptConfArgs "language.sql.args"
-             [ ("-H", "host")
-             , ("-P", "port")
-             , ("-uS", "user_schema")
-             , ("-pS", "pass_schema")
-             , ("-uE", "user_edit")
-             , ("-pE", "pass_edit")
-             , ("-D", "prefix")
-             ]
-  metaArgs <- getOptMetaArgs
-             [ ("-i", "db-init-sql")
-             , ("-I", "db-init-file")
-             ]
+  args <- concat <$> sequence [
+            joinArg "-H" <$> confArg "host"
+          , joinArg "-P" <$> confArg "port"
+          , joinArg "-uS" <$> confArg "user_schema"
+          , joinArg "-pS" <$> confArg "pass_schema"
+          , joinArg "-uE" <$> confArg "user_edit"
+          , joinArg "-pE" <$> confArg "pass_edit"
+          , joinArg "-D" <$> confArg "prefix"
+          , joinArg "-i" <$> metadata "db-init-sql"
+          , joinArg "-I" <$> metadataFile "db-init-file"
+          ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath ->
       classify <$> unsafeExec evaluator
-        (confArgs ++ metaArgs ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
+        (args ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
 sqlSchemaTester :: Tester Result
@@ -100,38 +98,20 @@ sqlSchemaTester = tester "schema" $ do
   guard (lang == "sql")
   ---
   evaluator <- configured "language.sql.evaluator.schema"
-  confArgs <- getOptConfArgs "language.sql.args"
-             [ ("-H", "host")
-             , ("-P", "port")
-             , ("-u", "user_schema")
-             , ("-p", "pass_schema")
-             , ("-D", "prefix")
-             ]
-  metaArgs <- getOptMetaArgs
-             [ ("-i", "db-init-sql")
-             , ("-I", "db-init-file")
-             ]
+  args <- concat <$> sequence [
+            joinArg "-H" <$> confArg "host"
+          , joinArg "-P" <$> confArg "port"
+          , joinArg "-u" <$> confArg "user_schema"
+          , joinArg "-p" <$> confArg "pass_schema"
+          , joinArg "-D" <$> confArg "prefix"
+          , joinArg "-i" <$> metadata "db-init-sql"
+          , joinArg "-I" <$> metadataFile "db-init-file"
+          ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
     withTemp "submit.sql" src $ \submittedFilePath ->
       classify <$> unsafeExec evaluator
-        (confArgs ++ metaArgs ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
-
-
-getOptConfArgs :: Text -> [(String, Text)] -> Tester [String]
-getOptConfArgs prefix opts =
-  concat <$> mapM optConfArg opts
-  where
-    optConfArg (opt, key) = do
-      cnf <- maybeConfigured (prefix<>"."<>key)
-      return $ maybe [] (\x -> [opt, x]) cnf
-
-
-getOptMetaArgs :: [(String, String)] -> Tester [String]
-getOptMetaArgs opts
-  = concat <$> mapM optMetaArg opts
-  where
-    optMetaArg (opt,key) = maybe [] (\x -> [opt, x]) <$> metadata key
+        (args ++ ["-A", answerFilePath,"-S", submittedFilePath]) ""
 
 
 classify :: (ExitCode, Text, Text) -> Result
@@ -155,3 +135,19 @@ getSqlAnswer  = do
       liftIO $ throwIO $ miscError "missing answer-sql in metadata"
     Just answer ->
       return answer
+
+
+metadataFile :: String -> Tester (Maybe String)
+metadataFile path = do
+  value <- metadata path
+  case value of
+    Nothing -> return Nothing
+    Just v -> do
+      tp <- testPath
+      return $ Just (takeDirectory tp </> v)
+
+
+confArg key = maybeConfigured $ "language.sql.args." <> key
+joinArg key = maybe [] (\v -> [key, v])
+fuseArg key = maybe [] (\v -> [key ++ v])
+
