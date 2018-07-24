@@ -30,10 +30,10 @@ sqlSelectTester = tester "select" $ do
         dependsOn ("db-init-file" :: String)
         dependsOnFile file
         args <- concat <$> sequence [
-                  maybeJoin "-h" <$> confArg "host"
-                , maybeJoin "-P" <$> confArg "port"
-                , maybeJoin "-u" <$> confArg "user_schema"
-                , maybeFuse "-p" <$> confArg "pass_schema"
+                  joinMaybe "-h" <$> confArg "host"
+                , joinMaybe "-P" <$> confArg "port"
+                , joinMaybe "-u" <$> confArg "user_schema"
+                , fuseMaybe "-p" <$> confArg "pass_schema"
                 ]
         dependsOn args
         dbName <- do
@@ -44,10 +44,10 @@ sqlSelectTester = tester "select" $ do
         let run = buildRun (setupProblem dbName file args)
         return (["-d", dbName], run)
   args <- concat <$> sequence [
-            maybeJoin "-H" <$> confArg "host"
-          , maybeJoin "-P" <$> confArg "port"
-          , maybeJoin "-u" <$> confArg "user_guest"
-          , maybeJoin "-p" <$> confArg "pass_guest"
+            joinMaybe "-H" <$> confArg "host"
+          , joinMaybe "-P" <$> confArg "port"
+          , joinMaybe "-u" <$> confArg "user_guest"
+          , joinMaybe "-p" <$> confArg "pass_guest"
           ]
   answer <- getSqlAnswer
   run $ withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
@@ -75,15 +75,15 @@ sqlEditTester = tester "edit" $ do
   ---
   evaluator <- configured "language.sql.evaluator.edit"
   args <- concat <$> sequence [
-            maybeJoin "-H" <$> confArg "host"
-          , maybeJoin "-P" <$> confArg "port"
-          , maybeJoin "-uS" <$> confArg "user_schema"
-          , maybeJoin "-pS" <$> confArg "pass_schema"
-          , maybeJoin "-uE" <$> confArg "user_edit"
-          , maybeJoin "-pE" <$> confArg "pass_edit"
-          , maybeJoin "-D" <$> confArg "prefix"
-          , maybeJoin "-i" <$> metadata "db-init-sql"
-          , maybeJoin "-I" <$> metadataFile "db-init-file"
+            joinMaybe "-H" <$> confArg "host"
+          , joinMaybe "-P" <$> confArg "port"
+          , joinMaybe "-uS" <$> confArg "user_schema"
+          , joinMaybe "-pS" <$> confArg "pass_schema"
+          , joinMaybe "-uE" <$> confArg "user_edit"
+          , joinMaybe "-pE" <$> confArg "pass_edit"
+          , joinMaybe "-D" <$> confArg "prefix"
+          , joinMaybe "-i" <$> metadata "db-init-sql"
+          , joinMaybe "-I" <$> metadataFile "db-init-file"
           ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
@@ -99,13 +99,13 @@ sqlSchemaTester = tester "schema" $ do
   ---
   evaluator <- configured "language.sql.evaluator.schema"
   args <- concat <$> sequence [
-            maybeJoin "-H" <$> confArg "host"
-          , maybeJoin "-P" <$> confArg "port"
-          , maybeJoin "-u" <$> confArg "user_schema"
-          , maybeJoin "-p" <$> confArg "pass_schema"
-          , maybeJoin "-D" <$> confArg "prefix"
-          , maybeJoin "-i" <$> metadata "db-init-sql"
-          , maybeJoin "-I" <$> metadataFile "db-init-file"
+            joinMaybe "-H" <$> confArg "host"
+          , joinMaybe "-P" <$> confArg "port"
+          , joinMaybe "-u" <$> confArg "user_schema"
+          , joinMaybe "-p" <$> confArg "pass_schema"
+          , joinMaybe "-D" <$> confArg "prefix"
+          , joinMaybe "-i" <$> metadata "db-init-sql"
+          , joinMaybe "-I" <$> metadataFile "db-init-file"
           ]
   answer <- getSqlAnswer
   withTemp "answer.sql" (T.pack answer) $ \answerFilePath ->
@@ -148,6 +148,6 @@ metadataFile path = do
 
 
 confArg key = maybeConfigured $ "language.sql.args." <> key
-maybeJoin key = maybe [] (\v -> [key, v])
-maybeFuse key = maybe [] (\v -> [key ++ v])
+joinMaybe key = maybe [] (\v -> [key, v])
+fuseMaybe key = maybe [] (\v -> [key ++ v])
 
