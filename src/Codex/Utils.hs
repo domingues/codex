@@ -17,6 +17,8 @@ import           Data.Aeson
 import qualified Data.HashMap.Strict as HM
 import           Data.Map.Syntax
 
+import           Snap.Snaplet.Auth.Backends.SqliteSimple
+
 import           Snap.Core hiding (path)
 import           Snap.Snaplet
 import           Snap.Snaplet.Heist
@@ -33,6 +35,7 @@ import qualified Text.XmlHtml as X
 
 import           Control.Monad (join)
 import           Control.Monad.State
+import           Control.Applicative 
 import           Control.Exception (SomeException)
 
 import qualified Data.Configurator as Configurator
@@ -49,6 +52,7 @@ import           Data.Time.Format hiding (parseTime)
 
 import           System.FilePath
 import qualified System.FastLogger as FastLogger
+import           System.Directory (doesFileExist, doesDirectoryExist)
 
 -- interpreted splices for handlers
 type ISplices = Splices (I.Splice Codex)
@@ -68,12 +72,18 @@ getStaticRoot = do
 -- | lookup full name for a user login in Db
 queryFullname :: UserLogin -> Codex (Maybe Text)
 queryFullname uid = do
-  list <- query "SELECT meta_json FROM snap_auth_user WHERE login = ?" (Only uid)
-  return $ case list of
-    [] -> Nothing
-    (txt:_) -> do
-      hm <- decodeStrict (T.encodeUtf8 txt) :: Maybe (HM.HashMap Text Text)
-      HM.lookup "fullname" hm
+  -- this hugly hack is needed because the Sqlite backend inserts NULL
+  -- fields for empty metadata; maybe we could handle this better?
+  Only check:_ <- query "SELECT meta_json is NULL from snap_auth_user WHERE login = ?" (Only uid) 
+  if check  then
+    return Nothing
+    else do
+    list <- query "SELECT meta_json FROM snap_auth_user WHERE login = ?" (Only uid)
+    return $ case list of
+      (txt:_) -> do
+        hm <- decodeStrict (T.encodeUtf8 txt) :: Maybe (HM.HashMap Text Text)
+        HM.lookup "fullname" hm
+      _ -> Nothing
 
 
 -- | Get current logged in user ID (if any)
@@ -167,8 +177,8 @@ require handler = do
 
 
 -- | get a text parameter from a POST request
-getTextPost :: MonadSnap m => ByteString -> m (Maybe Text)
-getTextPost name =
+getTextParam :: MonadSnap m => ByteString -> m (Maybe Text)
+getTextParam name =
   do opt <- getPostParam name
      return ((T.filter (/='\r') . T.decodeUtf8With T.ignore) <$> opt)
 
@@ -176,6 +186,13 @@ getTextPost name =
 -- | get a parameter with a default value
 getParamDef :: MonadSnap m => ByteString -> ByteString -> m ByteString
 getParamDef name def = fromMaybe def <$> getParam name
+
+
+guardFileExists  :: (MonadIO m, Alternative m) => FilePath -> m ()
+guardFileExists f = guard =<< liftIO (doesFileExist f) 
+
+guardDirectoryExists  :: (MonadIO m, Alternative m) => FilePath -> m ()
+guardDirectoryExists f = guard =<< liftIO (doesDirectoryExist f) 
 
 ---------------------------------------------------------------------
 -- | error handlers
@@ -214,7 +231,8 @@ utcTimeSplice tz t =
 pageSplices  :: Monad m => Page -> Splices (I.Splice m)
 pageSplices page = do
   "page-description" ## return (pageToHtml page)
-  "if-exercise" ## I.ifElseISplice (pageIsExercise page)
+  -- NB: not used; maybe remove?
+  -- "if-exercise" ## I.ifElseISplice (pageIsExercise page)
 
 
 pageUrlSplices :: FilePath -> ISplices
@@ -231,6 +249,10 @@ fileUrlSplices rqpath = do
   "file-path" ## I.textSplice (T.pack rqpath)
   "file-url" ## urlSplice (Files path)
   "file-parent-url" ## urlSplice (Files parent)
+
+urlSplices :: FilePath -> ISplices
+urlSplices rqpath = pageUrlSplices rqpath >> fileUrlSplices rqpath
+  
 
 
 

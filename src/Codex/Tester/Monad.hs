@@ -1,6 +1,6 @@
-{-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Codex.Tester.Monad (
   Tester,
@@ -11,7 +11,9 @@ module Codex.Tester.Monad (
   testConfig,
   testPath,
   testCode,
+  testPage,
   testMetadata,
+  testUser,
   metadata,
   BuildCache,
   initBuildCache,
@@ -21,26 +23,27 @@ module Codex.Tester.Monad (
   ) where
 
 
-import           Codex.Page
-import           Codex.Tester.Limits
-import           Codex.Types                      (Code)
+
+import           Data.Configurator.Types
+import qualified Data.Configurator as Conf
+
+import           Data.Monoid
 import           Control.Applicative
-import           Control.Concurrent.MVar
-import qualified Control.Concurrent.ReadWriteLock as RWL
-import           Control.Exception
 import           Control.Monad.Trans
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.Reader
-import           Control.Monad.Trans.State
-import qualified Data.Configurator                as Conf
-import           Data.Configurator.Types
+
+import           Codex.Types (Code, UserLogin)
+import           Text.Pandoc (Meta)
+import           Codex.Page
+import           Codex.Tester.Limits
+
 import           Data.Hashable
 import qualified Data.Map.Strict                  as Map
-import           Data.Monoid
 import           Data.Time.Clock                  (UTCTime)
+import           Control.Concurrent.MVar
+import qualified Control.Concurrent.ReadWriteLock as RWL
 import qualified System.Directory                 as D
-import           Text.Pandoc                      (Meta)
-
 
 -- | a monad for testing scripts
 -- allows access to a test environment, IO and failure (i.e. passing)
@@ -50,22 +53,24 @@ newtype Tester a
 
 -- | testing environment
 data TestEnv
-   = TestEnv { _testConfig     :: Config     -- ^ static configuration file
-             , _testMeta       :: Meta       -- ^ exercise metadata
-             , _testPath       :: FilePath   -- ^ file path to exercise page
-             , _testCode       :: Code       -- ^ submited language & code
+   = TestEnv { _testConfig :: Config   -- ^ static configuration file
+             , _testPage :: Page       -- ^ exercise page
+             , _testPath :: FilePath   -- ^ file path to exercise page
+             , _testCode :: Code       -- ^ submited language & code
+             , _testUser :: UserLogin  -- ^ user
              , _testBuildCache :: BuildCache
-             }
+             } 
 
 
--- | run a tester
-runTester :: Config -> BuildCache -> Meta -> FilePath -> Code -> Tester a
-          -> IO (Maybe a)
-runTester cfg cache meta path code action
-  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg meta path code cache)) 0
+-- | run function for testers
+runTester ::
+  Config -> BuildCache -> Page -> FilePath -> Code -> UserLogin -> Tester a
+  -> IO (Maybe a)
+runTester cfg cache page path code user action
+  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg page path code user))
 
 
--- | fetch paramaters from the enviroment
+-- | fetch parameters from enviroment
 testConfig :: Tester Config
 testConfig = Tester (asks _testConfig)
 
@@ -75,8 +80,14 @@ testPath = Tester (asks _testPath)
 testCode :: Tester Code
 testCode = Tester (asks _testCode)
 
+testPage :: Tester Page
+testPage = Tester (asks _testPage)
+
 testMetadata :: Tester Meta
-testMetadata = Tester (asks _testMeta)
+testMetadata = pageMeta <$> testPage
+
+testUser :: Tester UserLogin
+testUser = Tester (asks _testUser)
 
 
 -- | fetch a metadata value; return Nothing if key not present

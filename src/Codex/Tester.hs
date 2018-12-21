@@ -1,7 +1,7 @@
-
 module Codex.Tester (
   oneOf,
   tester,
+  nullTester,
   -- * module re-exports
   Meta, Code(..),
   lookupFromMeta,
@@ -48,3 +48,6 @@ tester name cont = do
   guard (lookupFromMeta "tester" meta == Just name)
   cont
 
+-- | trivial tester (accepts all submissions)
+nullTester :: Tester Result
+nullTester = tester "accept" $ return $ accepted "Submission recorded"

@@ -8,15 +8,17 @@ module Codex.Page where
 import           Text.Pandoc hiding (Code)
 import qualified Text.Pandoc ( Inline(Code) )
 import           Text.Pandoc.Walk
+import           Text.Pandoc.Highlighting (monochrome)
 import           Text.XmlHtml
 import           Text.Blaze.Renderer.XmlHtml
 
 import           Data.Maybe
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import qualified Data.Map as Map
 import           Data.Monoid
 import           Control.Applicative
-
+import           Control.Monad.IO.Class
 import           Data.List (intersperse)
 
 import           Codex.Types
@@ -68,10 +70,14 @@ languages meta =
 pageDefaultText :: Page -> Maybe Text
 pageDefaultText = lookupFromMeta "code" . pageMeta
 
--- is this an exercise page?
-pageIsExercise :: Page -> Bool
-pageIsExercise p
-  = fromMaybe False $ lookupFromMeta "exercise" (pageMeta p)
+-- is it an exercise page? a quiz page?
+isExercise, isQuiz :: Page -> Bool
+isExercise  = isJust . pageTester
+isQuiz page = pageTester page == Just "quiz" 
+
+
+pageTester :: Page -> Maybe Text
+pageTester = lookupFromMeta "tester" . pageMeta
 
 -- time interval for valid submissions
 pageInterval :: Page -> Interval Time
@@ -82,9 +88,9 @@ metaInterval meta
   = fromMaybe (Interval Nothing Nothing) $
     (lookupFromMeta "valid" meta >>= parseInterval)
 
--- feedback level for submissions
-pageFeedback :: Page -> Int
-pageFeedback p = fromMaybe 100 (lookupFromMeta "feedback" (pageMeta p))
+-- | give feedback for submissions?
+pageFeedback :: Page -> Bool
+pageFeedback = fromMaybe True . lookupFromMeta "feedback" . pageMeta 
 
 
 
@@ -175,11 +181,15 @@ metaText (MetaMap m) =
 
 -- | render a page as a list of HTML nodes
 pageToHtml :: Page -> [Node]
-pageToHtml = renderHtmlNodes . writeHtml opts
+pageToHtml doc = case result of
+  Left err -> error (show err)
+  Right nodes -> renderHtmlNodes nodes
   where
+    result = runPure (writeHtml5 opts doc)
     opts = def { writerExtensions = pandocExtensions
-               , writerHTMLMathMethod = MathJax "/mathjax",
-                 writerHighlight = True
+               , writerHTMLMathMethod = MathJax "/mathjax"
+               -- , writerHighlightStyle = Nothing
+               , writerHighlightStyle = Just monochrome
                }
 
 blocksToHtml :: [Block] -> [Node]
@@ -187,15 +197,26 @@ blocksToHtml blocks = pageToHtml (Pandoc nullMeta blocks)
 
 
 -- | read a file and parse markdown to a Pandoc document
-readMarkdownFile :: FilePath -> IO Pandoc
-readMarkdownFile fp = do
-  r <- readMarkdown opts <$> readFile fp
-  case r of
-    Left err -> ioError (userError $ show err)
-    Right doc -> return doc
+readMarkdownFile :: MonadIO m => FilePath -> m Pandoc
+readMarkdownFile filepath = liftIO $ do
+  txt <- T.readFile filepath
+  removeHTMLComments <$> runIOorExplode (readMarkdown opts txt)
   where
     opts = def { readerExtensions = pandocExtensions
-               , readerSmart = True
                }
 
- 
+--
+-- | remove raw HTML comments from pages
+--
+removeHTMLComments :: Page -> Page
+removeHTMLComments = walk removeInline . walk removeBlock
+  where removeInline (RawInline (Format "html") str)
+          | comment str = Space
+        removeInline elm = elm
+        removeBlock (RawBlock (Format "html") str)
+          | comment str = Null
+        removeBlock blk = blk
+        -- test a comment string
+        -- comment str = take 4 str == "<!--" 
+        comment ('<':'!':'-':'-':_) = True
+        comment _                   = False

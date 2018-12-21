@@ -18,7 +18,9 @@ import           Control.Monad.State
 import           Control.Exception  (IOException)
 import           Control.Exception.Lifted  (catch)
 
+import           Data.Char (isAlphaNum)
 import           Data.ByteString.UTF8                        (ByteString)
+import qualified Data.ByteString.UTF8                        as B
 import           Data.Map.Syntax
 
 import qualified Data.Text                                   as T
@@ -44,7 +46,7 @@ import           Snap.Util.FileServe                         (fileType,
 import           Data.Time.Clock
 import           Data.Time.LocalTime
 
-import           System.Directory                            (doesFileExist)
+
 import           System.FilePath
 
 import           System.FastLogger                    (newLogger, stopLogger)
@@ -73,107 +75,162 @@ import           Data.Version                                (showVersion)
 import           Paths_codex                                 (version)
 
 
-import           Text.Pandoc                                 hiding (Code)
+import           Text.Pandoc               hiding (Code,
+                                                   getCurrentTime,
+                                                   getCurrentTimeZone)
 import qualified Text.Pandoc as Pandoc 
 import           Text.Pandoc.Walk                            as Pandoc
 
+           
 
-
--- | handle page requests
+-- | handle file requests
 handlePage :: FilePath -> Codex ()
 handlePage rqpath = do
   uid <- require getUserLogin <|> unauthorized
+  method GET (handleGet uid rqpath <|> notFound) <|>
+    method POST (handlePost uid rqpath <|> badRequest)
+
+-- | handle GET requests for pages and files
+handleGet uid rqpath = do
   root <- getDocumentRoot
   let filepath = root </> rqpath
-  c <- liftIO (doesFileExist filepath)
-  unless c notFound
+  guardFileExists filepath
+  let rqdir = takeDirectory rqpath
   let mime = fileType mimeTypes rqpath
-  case mime of
-    "text/markdown" -> (method GET (servePage uid rqpath) <|>
-                        method POST (handlePost uid rqpath filepath))
-    _ -> method GET (serveFileAs mime filepath)
-
-
--- | handle post request for an exercise submission
---
-handlePost :: UserLogin -> FilePath -> FilePath -> Codex ()
-handlePost uid rqpath filepath = do
-  page <- liftIO (readMarkdownFile filepath)
-  unless (pageIsExercise page) badRequest
-  text <- require (getTextPost "code")
-  lang <- Language <$> require (getTextPost "language")
-  unless (lang `elem` pageLanguages page) badRequest
-  sid <- newSubmission uid rqpath (Code lang text)
-  redirectURL (Report sid)
-
-
--- | serve a markdown page
-servePage :: UserLogin -> FilePath -> Codex ()
-servePage uid rqpath = do
-  page <- readPage uid rqpath
-  let quiz = fromMaybe False (lookupFromMeta "quiz" (pageMeta page))
-  if pageIsExercise page then
-    if quiz then
-      renderQuiz rqpath (makeQuiz uid page)
-      else
-      renderExercise rqpath page =<< getPageSubmissions uid rqpath
+  if mime == "text/markdown" then do
+    page <- readMarkdownFile filepath >>= fillExerciseLinks uid rqdir
+    withSplices (urlSplices rqpath)
+      (handleGetQuiz uid rqpath page <|>
+       handleGetCode uid rqpath page <|>
+       handleGetMarkdown page)
     else
-    renderWithSplices "_page" (pageUrlSplices rqpath >>
-                               fileUrlSplices rqpath >>
-                               pageSplices page)
+    serveFileAs mime filepath
+  
+-- | get a multiple choice quiz
+handleGetQuiz :: UserLogin -> FilePath -> Page -> Codex ()
+handleGetQuiz uid rqpath page = do
+  guard (isQuiz page)
+  let quiz = shuffleQuiz uid page
+  subs <- getPageSubmissions uid rqpath
+  -- fill-in last submitted answers
+  let answers = fromMaybe emptyAnswers $ case subs of
+                  [] -> Nothing
+                  _ ->  getSubmittedAnswers (last subs)
+  withTimeSplices page $ renderWithSplices "_quiz" $ quizSplices quiz answers
 
---  render an exercise page
-renderExercise :: FilePath -> Page -> [Submission] -> Codex ()
-renderExercise rqpath page subs = do
+
+-- | get a coding exercise 
+handleGetCode :: UserLogin -> FilePath -> Page -> Codex ()
+handleGetCode uid rqpath page = do
+  guard (isExercise page)
   tz <- liftIO getCurrentTimeZone
-  timeSplices <- timingSplices page
-  renderWithSplices "_exercise" $ do
-    pageUrlSplices rqpath
-    fileUrlSplices rqpath
+  subs <- getPageSubmissions uid rqpath
+  withTimeSplices page $ renderWithSplices "_exercise" $ do
     pageSplices page
-    exerciseSplices page
-    timeSplices
+    codeSplices page
+    feedbackSplices page
     submissionListSplices tz subs
     textEditorSplice
     languageSplices (pageLanguages page) Nothing
 
-renderQuiz :: FilePath -> Quiz -> Codex ()
-renderQuiz rqpath quiz = do
-  renderWithSplices "_quiz" $ do
-    pageUrlSplices rqpath
-    fileUrlSplices rqpath
-    quizSplices quiz
-    
 
--- render report for a single submission
-renderReport :: FilePath -> Page -> Submission -> Codex ()
-renderReport rqpath page sub = do
-  tz <- liftIO getCurrentTimeZone
-  timeSplices <- timingSplices page
-  renderWithSplices "_report" $ do
-    pageUrlSplices rqpath
+handleGetMarkdown :: Page -> Codex ()
+handleGetMarkdown page = renderWithSplices "_page" (pageSplices page)
+  
+
+
+-- | handle POST requests for exercise pages
+handlePost :: UserLogin -> FilePath -> Codex ()
+handlePost uid rqpath = do
+  root <- getDocumentRoot
+  let filepath = root </> rqpath
+  guardFileExists filepath
+  let mime = fileType mimeTypes rqpath
+  guard (mime == "text/markdown") 
+  page <- readMarkdownFile filepath
+  handlePostQuiz uid rqpath page <|> handlePostCode uid rqpath page
+
+handlePostQuiz :: UserLogin -> FilePath -> Page -> Codex ()
+handlePostQuiz uid rqpath page = do
+  guard (isQuiz page)
+  ans <- getFormAnswers
+  let text = encodeAnswers ans
+  sid <- newSubmission uid rqpath (Code "json" text)
+  redirectURL (Report sid)
+  
+handlePostCode :: UserLogin -> FilePath -> Page -> Codex ()
+handlePostCode uid rqpath page = do
+  guard (isExercise page)
+  text <- require (getTextParam "code")
+  lang <- Language <$> require (getTextParam "language")
+  guard (lang `elem` pageLanguages page) 
+  sid <- newSubmission uid rqpath (Code lang text)
+  redirectURL (Report sid)
+
+ 
+
+-- | handle GET requests for previous submission 
+handleReport :: SubmitId -> Codex ()
+handleReport sid = method GET $ do
+  usr <- require (with auth currentUser) <|> unauthorized
+  let uid = authUserLogin usr
+  sub <- require (getSubmission sid) <|> notFound
+  unless (isAdmin usr || submitUser sub == uid)
+      unauthorized
+  root <- getDocumentRoot
+  let rqpath = submitPath sub
+  page <- readMarkdownFile (root </> rqpath)
+  if isQuiz page then
+    handleQuizReport rqpath page sub
+    else
+    handleCodeReport rqpath page sub
+
+
+-- | report a code submission
+handleCodeReport :: FilePath -> Page -> Submission -> Codex ()
+handleCodeReport rqpath page sub = do
+  tz <- liftIO getCurrentTimeZone   
+  withTimeSplices page $ renderWithSplices "_report" $ do
+    urlSplices rqpath
     pageSplices page
-    exerciseSplices page
-    timeSplices
+    codeSplices page
+    feedbackSplices page
     submitSplices tz sub
     textEditorSplice
     languageSplices (pageLanguages page) (Just $ submitLang sub)
 
+-- | report a quiz submission
+handleQuizReport :: FilePath -> Page -> Submission -> Codex ()
+handleQuizReport rqpath page sub = do
+  tz <- liftIO getCurrentTimeZone
+  let quiz = shuffleQuiz (submitUser sub) page
+  let answers = fromMaybe emptyAnswers $ getSubmittedAnswers sub
+  renderWithSplices "_answers" $ do
+    urlSplices rqpath
+    pageSplices page
+    feedbackSplices page
+    submitSplices tz sub
+    quizSplices quiz answers
 
--- | read a page and patch exercise links
-readPage :: UserLogin -> FilePath -> Codex Page
-readPage uid rqpath = do
+
+getSubmittedAnswers :: Submission -> Maybe Answers
+getSubmittedAnswers = decodeAnswers . codeText . submitCode
+
+
+-- | fill titles and submission counts on exercise links
+fillExerciseLinks :: UserLogin -> FilePath -> Page -> Codex Page
+fillExerciseLinks uid rqdir page = do
   root <- getDocumentRoot
-  page <- liftIO $ readMarkdownFile (root </> rqpath)
-  let rqdir = takeDirectory rqpath
   walkM (fetchLink uid root rqdir) page
+ 
 
 -- | fetch title and submissions count for exercise links
 fetchLink uid root rqdir
   elm@(Link attr@(_, classes,_) inlines target@(url,_))
   | "ex" `elem` classes = do
-      title <- liftIO $ readPageTitle (root </> rqdir </> url)
-      count <- countPageSubmissions uid (rqdir </> url)
+      let path = normalise (rqdir </> url)
+      title <- liftIO $ readPageTitle (root </> path)
+      count <- countPageSubmissions uid path
       return (formatLink attr title target count)
 fetchLink uid root rqdir elm
   = return elm
@@ -195,73 +252,57 @@ readPageTitle path
     readTitle = (pageTitle <$> readMarkdownFile path)
                 `catch` (\(_ :: IOException) -> return Nothing)
 
-{-
-pageSubmissions :: UserLogin -> FilePath -> Codex Int
-pageSubmissions uid path
-  = length <$> getPageSubmissions uid path
--}
-
--- | handle GET requests for submission reports
-handleReport :: SubmitId -> Codex ()
-handleReport sid = do
-  usr <- require (with auth currentUser) <|> unauthorized
-  let uid = authUserLogin usr
-  sub <- require (getSubmission sid) <|> notFound
-  unless (isAdmin usr || submitUser sub == uid)
-      unauthorized
-  root <- getDocumentRoot
-  let rqpath = submitPath sub
-  method GET $ do
-    page <- liftIO $ readMarkdownFile (root </> rqpath)
-    renderReport rqpath page sub
 
 
 
--- | splices related to exercises
-exerciseSplices :: Page -> ISplices
-exerciseSplices page = do
-  let fb = pageFeedback page
+-- | splices related to code exercises
+codeSplices :: Page -> ISplices
+codeSplices page = do
   "page-languages" ##
     I.textSplice $ T.intercalate "," $ map fromLanguage $ pageLanguages page
   "language-extensions" ##
    I.textSplice $ languageExtensions $ pageLanguages page
   "default-text" ## maybe (return []) I.textSplice (pageDefaultText page)
-  "feedback-low" ## I.ifElseISplice (fb >= 25)
-  "feedback-medium" ## I.ifElseISplice (fb >= 50)
-  "feedback-high" ## I.ifElseISplice (fb >= 75)
+
+
+feedbackSplices :: Page -> ISplices
+feedbackSplices page = do
+  "if-feedback" ## I.ifElseISplice (pageFeedback page)
+  
 
 
 -- | splices related to the submission interval for an exercise
-timingSplices :: Page -> Codex ISplices
-timingSplices page = do
+timingSplices :: TimeZone -> UTCTime -> Interval UTCTime -> ISplices
+timingSplices tz now interval = do
+  let timeLeft = fmap (\t -> diffUTCTime t now) (higher interval)
+  "valid-from" ##
+    I.textSplice $ maybe "N/A" (showTime tz) (lower interval)
+  "valid-until" ##
+    I.textSplice $ maybe "N/A" (showTime tz) (higher interval)
+  "current-timing" ##
+    (caseSplice . timeInterval now) interval
+  "time-left" ##
+    I.textSplice $ maybe "N/A" (\t -> T.pack $ formatNominalDiffTime t) timeLeft
+
+withTimeSplices :: Page -> Codex a -> Codex a
+withTimeSplices page action = do
   tz  <- liftIO getCurrentTimeZone
   now <- liftIO getCurrentTime
   events <- getEvents
   let optInt = evalInterval tz events (pageInterval page)
-  case optInt of
-    Left msg -> return (pure ())
-    Right interval -> do
-      let timeLeft = fmap (\t -> diffUTCTime t now) (higher interval)
-      return $ do
-        "valid-from" ##
-          I.textSplice $ maybe "N/A" (showTime tz) (lower interval)
-        "valid-until" ##
-          I.textSplice $ maybe "N/A" (showTime tz) (higher interval)
-        "current-timing" ##
-          (caseSplice . timeInterval now) interval
-        "time-left" ##
-          I.textSplice $ maybe "N/A" (\t -> T.pack $ formatNominalDiffTime t) timeLeft
- 
+  let splices = case optInt of
+        Left err -> do
+          "current-timing" ## I.textSplice (T.pack err)
+        Right interval -> timingSplices tz now interval
+  withSplices splices action
 
 
 -- | splices relating to a list of submissions
 submissionListSplices :: TimeZone -> [Submission] -> ISplices
 submissionListSplices tz list = do
   let count = length list
-  "submissions-count" ##
-    I.textSplice (T.pack $ show count)
-  "if-submitted" ##
-    I.ifElseISplice (count > 0)
+  "submissions-count" ## I.textSplice (T.pack $ show count)
+  "if-submitted" ## I.ifElseISplice (count > 0)
   "submissions-list" ##
     I.mapSplices (I.runChildrenWith . submitSplices tz) list
 
@@ -329,8 +370,9 @@ codexInit tester =
     prefix <- liftIO $ Conf.require conf "url_prefix"
     h <- nestSnaplet "" heist $ heistInit "templates"
     r <- nestSnaplet "router" router (initRouter prefix)
-    s <- nestSnaplet "sess" sess $
-           initCookieSessionManager "site_key.txt" "sess" Nothing (Just 36000)
+    let sessName = sessionName prefix 
+    s <- nestSnaplet sessName sess $
+         initCookieSessionManager "site_key.txt" sessName Nothing Nothing
     d <- nestSnaplet "db" db S.sqliteInit
     a <- nestSnaplet "auth" auth $ initSqliteAuth sess d
     addAuthSplices h auth
@@ -363,6 +405,11 @@ codexInit tester =
                , _buildCache = cache
                }
 
+-- | cookie name for each session is a function of the request path prefix
+sessionName :: Text -> ByteString
+sessionName prefix
+  = "sess_" <> (B.fromString $ T.unpack $ T.filter isAlphaNum prefix)
+
 
 configSplices :: Config -> IO ISplices
 configSplices conf = do
@@ -382,7 +429,7 @@ staticSplices = do
   "submissionList" ## urlSplice SubmissionList
   "version" ## versionSplice
   "timeNow" ## nowSplice
-  "evaluating" ## return []
+  "if-evaluating" ## return []
   "loggedInName" ## loggedInName auth
   "ifAdmin" ## do mbAu <- lift (withTop auth currentUser)
                   I.ifElseISplice (maybe False isAdmin mbAu)

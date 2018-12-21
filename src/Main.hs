@@ -32,6 +32,7 @@ import           Codex.Tester.PythonDoctest
 import           Codex.Tester.HaskellQC
 import           Codex.Tester.ClangQC
 import           Codex.Tester.InputOutput
+import           Codex.Tester.Quiz
 import           Codex.Tester.Sql
 import           Snap.Loader.Static
 
@@ -48,8 +49,12 @@ app = codexInit $
             , stdioTester =<< javaBuild
             , stdioTester =<< haskellBuild
             , stdioTester =<< pythonBuild
+            -- multiple choice quizzes
+            , quizTester
             -- SQL tester
             , sqlTester
+            -- trivial tester (accepts all submissions)
+            , nullTester
             ]
        
 ------------------------------------------------------------------------------

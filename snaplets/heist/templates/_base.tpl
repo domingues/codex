@@ -3,10 +3,11 @@
     <meta charset="UTF-8">
     <title>Codex <version/></title>
     <link rel="stylesheet" type="text/css" href="/static/screen.css"/>
+    <link rel="stylesheet" type="text/css" href="/static/highlight.css"/>
     <script type="text/javascript" src="/static/js/ace-glue.js"/>
-    <evaluating>
+    <if-evaluating>
       <META HTTP-EQUIV="refresh" CONTENT="5">
-    </evaluating>
+    </if-evaluating>
   </head>
   <body>
      <div id="content">

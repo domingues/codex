@@ -66,40 +66,27 @@ evaluatorWith tester Submission{..} = do
   root <- getDocumentRoot
   conf <- getSnapletUserConfig
   return $ do                           -- ^ return evaluation IO action
-    let filepath = root </> submitPath  -- ^ file path to exercise
-    meta <- pageMeta <$> readMarkdownFile filepath
+    let filepath = root </> submitPath  -- ^ file path to exercise 
+    page <- readMarkdownFile filepath
     tz <- getCurrentTimeZone
-    let optInt = evalInterval tz events (metaInterval meta)
+    let optInt = evalInterval tz events (metaInterval $ pageMeta page)
     case optInt of
       Left err ->
         updateSubmission sqlite submitId (wrongInterval err) Valid
       Right int -> do
         let timing = timeInterval submitTime int
-        result <- testerWrapper conf buildCache filepath submitCode meta tester
+        result <- testWrapper conf buildCache page filepath submitCode submitUser tester
                   `catch`
                   (\(e::SomeException) ->
                       return (miscError $ T.pack $ show e))
         updateSubmission sqlite submitId result timing
 
--- let opt = rankTime submitTime <$> evalI tz evs (metaInterval meta)
-{-
-    case opt of
-      Nothing ->
-        updateSubmission sqlite sid wrongInterval Valid
-      Just timing -> do
-        result <- testerWrapper conf buildCache filepath code meta tester
-                  `catch`
-                  (\(e::SomeException) ->
-                      return (miscError $ T.pack $ show e))
-        updateSubmission sqlite sid result timing
--}
-
--- | set default limits and run a tester
-testerWrapper cfg buildCache path code meta action
-  = fromMaybe invalidTester <$> runTester cfg buildCache meta path code action
+-- | wrapper to set default limits and run a tester
+testWrapper cfg buildCache page path code user action
+  = fromMaybe invalidTester <$> runTester cfg buildCache page path code user action
 
 wrongInterval :: String -> Result
-wrongInterval msg = miscError ("invalid metadata: " <> T.pack msg)
+wrongInterval msg = miscError ("invalid time interval: " <> T.pack msg)
  
 invalidTester :: Result
 invalidTester = miscError "no acceptable tester configured"

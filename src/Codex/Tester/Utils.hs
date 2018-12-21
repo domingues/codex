@@ -1,14 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
-module Codex.Tester.Utils where
+module Codex.Tester.Utils
+  ( match
+  , withTemp, withTempDir
+  , assert
+  , fileExists
+  , removeFileIfExists
+  , chmod
+  , readable, executable, writeable
+  , runCompiler
+  , safeExec
+  , unsafeExec
+  , getQuickCheckArgs
+  ) where
 
 
 import           Data.Text(Text)
-import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
-import           Control.Exception
+import           Control.Exception hiding (assert)
 import           Control.Monad       (when, unless)
 import           Control.Monad.Trans
 import           System.IO
@@ -17,10 +29,25 @@ import           System.Exit
 import           System.Directory (doesFileExist, removeFile)
 import           System.Posix.Files
 import           System.Posix.Types (FileMode)
-import qualified System.Process.Text as T
-import qualified System.Process.Text.Lazy as L
-import qualified Data.Text.Lazy           as L
- 
+
+
+import           Control.Concurrent (forkIO)
+import           Control.Concurrent.Async (async, wait)
+import           System.Process (readProcessWithExitCode,
+                                  terminateProcess, waitForProcess)
+import           System.IO.Streams (InputStream, OutputStream)
+import qualified System.IO.Streams as Streams
+
+import           Data.ByteString.Char8    (ByteString)
+import qualified Data.ByteString.Char8          as B
+import qualified Data.ByteString.Builder        as B
+import qualified Data.ByteString.Lazy           as LB
+
+import qualified Data.Text                      as T
+import qualified Data.Text.Encoding             as T
+import qualified Data.Text.Encoding.Error       as T
+
+  
 import           Data.Bits
 import           Data.Maybe(catMaybes)
 
@@ -85,32 +112,54 @@ writeable mode =
 
 runCompiler :: FilePath -> [String] -> IO ()
 runCompiler cmd args = do
-  (exitCode, _, err) <- T.readProcessWithExitCode cmd args ""
+  (exitCode, _, err) <- readProcessWithExitCode cmd args ""
   case exitCode of
     ExitFailure _ ->
-      throwIO (compileError err)
+      throwIO (compileError $ T.pack err)
     ExitSuccess ->
       return ()
 
 
--- | run a command under SafeExec;
--- uses lazy Text to detect and handle output limit violation
+-- | safeExec with text input/output
 safeExec :: Limits
           -> FilePath           -- ^ command
           -> [String]           -- ^ arguments
           -> Text               -- ^ stdin
-          -> IO (ExitCode, Text, Text) -- ^ code, stdout, stderr
-safeExec Limits{..} exec args stdin = do
-  (code, stdout, stderr) <-
-    L.readProcessWithExitCode "safeexec" (args' ++ args) (L.fromStrict stdin)
-  if L.compareLength stdout outputLimit == GT ||
-     L.compareLength stderr outputLimit == GT then
-    throwIO (runtimeError "Output limit exceeded")
-    else
-    return (code, L.toStrict stdout, L.toStrict stderr)
+          -> IO (ExitCode, Text, Text)
+             -- ^ code, stdout, stderr
+safeExec limits exec args stdin = do
+  (code, out, err) <- safeExecBS limits exec args (T.encodeUtf8 stdin)
+  return (code,
+           T.decodeUtf8With T.lenientDecode out,
+           T.decodeUtf8With T.lenientDecode err)
+
+--
+-- | safeExec using streaming I/O to handle output limits
+--
+safeExecBS :: Limits
+         -> FilePath           -- ^ command
+         -> [String]           -- ^ arguments
+         -> ByteString         -- ^ stdin
+         -> IO (ExitCode, ByteString,ByteString)
+             -- ^ code, stdout, stderr
+safeExecBS Limits{..} exec args inbs = do
+  (inp, out, err, pid) <-
+    Streams.runInteractiveProcess "safeexec" (args' ++ args) Nothing Nothing
+  (do forkIO (produceStream inp inbs)
+      a1 <- async (consumeStream outputLimit out)
+      a2 <- async (consumeStream outputLimit err)
+      outbs <- wait a1
+      errbs <- wait a2
+      code <- waitForProcess pid
+      return (code, outbs, errbs)
+    ) `catch` (\(e ::SomeException) ->
+                  do terminateProcess pid
+                     code <- waitForProcess pid
+                     return (code, "", B.pack $ show e)
+              )
   where
-    outputLimit = maybe 100000 fromIntegral maxFSize
-    -- default output limit: 100K charateres 
+    outputLimit = maybe 30000 fromIntegral maxFSize
+    -- default output limit: 30K bytes
     mkArg opt = maybe [] (\c -> [opt, show c])
     args' = mkArg "--cpu" maxCpuTime
             ++
@@ -127,14 +176,43 @@ safeExec Limits{..} exec args stdin = do
             mkArg "--nproc" numProc
             ++
             ["--exec", exec] 
-    
+
+
+
+produceStream :: OutputStream a -> a -> IO ()
+produceStream s v = do
+  Streams.write (Just v) s
+  Streams.write Nothing s
+
+
+-- | consume a stream and accumulate output
+-- throws an exception if maximum size exceeded
+consumeStream :: Int -> InputStream ByteString -> IO ByteString
+consumeStream maxSize inp = do
+  buf <- worker maxSize inp mempty
+  return (LB.toStrict . B.toLazyByteString $ buf)
+  where
+    worker :: Int -> InputStream ByteString -> B.Builder -> IO B.Builder
+    worker size inp buf = do
+      response <- Streams.read inp
+      case response of
+        Nothing -> return buf
+        Just bytes ->
+          let k = B.length bytes
+          in if k > size then
+               ioError $ userError "Output Limit Exceeded"
+             else
+               worker (size - k) inp (buf <> B.byteString bytes)
 
   
 unsafeExec :: FilePath                 -- ^ command
           -> [String]                  -- ^ arguments
           -> Text                      -- ^ stdin
           -> IO (ExitCode, Text, Text) -- ^ code, stdout, stderr
-unsafeExec = T.readProcessWithExitCode
+unsafeExec exec args inp = do
+  (code, out, err) <-
+    readProcessWithExitCode exec args (T.unpack inp)
+  return (code, T.pack out, T.pack err)
 
 
 -- get QuickCheck runner command line arguments
