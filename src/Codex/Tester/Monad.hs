@@ -43,6 +43,8 @@ import qualified Data.Map.Strict                  as Map
 import           Data.Time.Clock                  (UTCTime)
 import           Control.Concurrent.MVar
 import qualified Control.Concurrent.ReadWriteLock as RWL
+import           Control.Exception
+import           Control.Monad.Trans.State
 import qualified System.Directory                 as D
 
 -- | a monad for testing scripts
@@ -67,7 +69,7 @@ runTester ::
   Config -> BuildCache -> Page -> FilePath -> Code -> UserLogin -> Tester a
   -> IO (Maybe a)
 runTester cfg cache page path code user action
-  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg page path code user))
+  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg page path code user cache)) 0
 
 
 -- | fetch parameters from enviroment

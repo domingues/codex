@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Codex.Tester (
   oneOf,
   tester,
