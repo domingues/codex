@@ -1,195 +1,278 @@
 {-# LANGUAGE OverloadedStrings #-}
---
--- Multiple choice quizzes
---
-module Codex.Quiz where
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveGeneric #-}
 
-import           Data.Char
-import           Text.Pandoc.Definition
-import           Text.Pandoc.Walk
-import           Data.Monoid
-import           Data.Maybe (fromMaybe, catMaybes)
-import           Data.Hashable
-import qualified Data.Text           as T
-import qualified Data.Text.Encoding as T
-import           Data.Text(Text)
-import           Data.ByteString.UTF8 (ByteString)
-import qualified Data.ByteString.UTF8 as B
-import qualified Data.ByteString.Lazy as LB
+-- | Quizzes with multiple choice & fill-in questions
+--
+module Codex.Quiz
+  ( Quiz(..)
+  , Question(..)
+  , Choices(..)
+  , Selection(..)
+  , Answers(..)
+  , Key
+  , QuizAnswers(..)
+  , shuffleQuiz
+  , lookupAnswer
+  , listLabels
+  , quizToDocument
+  , quizToText
+  ) where
 
-import           Codex.Quiz.Random
-import           Codex.Page
 import           Codex.Types
+import           Codex.Page
+import           Codex.Random (Rand)
+import qualified Codex.Random as Rand
 
-import           Snap.Core hiding (path)
+import qualified Text.Pandoc.Builder as P
+import qualified Text.Pandoc.Walk as P
+import qualified Text.Pandoc.Writers.Markdown as P
+import qualified Text.Pandoc.Class as P
+import qualified Text.Pandoc.Options as P
 
-import           Heist
-import qualified Heist.Splices as I
-import qualified Heist.Interpreted as I
+
+import           Data.Text (Text)
+import qualified Data.Text as T
+import           Data.Char
+import           Data.Monoid
+import           Data.Maybe (fromMaybe)
+import           Data.Hashable
 
 import           Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
-import qualified Data.Map            as Map
-import           Data.Aeson (ToJSON, FromJSON, toJSON, parseJSON)
-import qualified Data.Aeson          as Aeson
-import           Data.Map.Syntax
-import           Data.List (intersperse, sort)
+import qualified Data.Aeson as Aeson
+import           Data.Aeson (ToJSON, FromJSON)
+import           Data.List (groupBy)
 
-import qualified Text.XmlHtml as X
-
+import           GHC.Generics
 
 -- | a quiz has a preamble and a list of questions
-data Quiz = Quiz [Block] [Question]
-  deriving Show
+data Quiz
+  = Quiz { preamble :: [P.Block]         -- ^ description preamble
+         , questions :: [Question]       -- ^ list of questions
+         }
 
--- | a question consists of a preamble (list of blocks), 
--- list of items describing options tagged with truth values
 data Question
-  = Question [Block] ListAttributes [(Label, Bool, [Block])]
-  deriving Show
+  = Question { identifier :: String
+             , description :: [P.Block]
+             , choices :: Choices
+             }
 
--- | answer labels
-type Label = String
+data Choices
+  = FillIn Text (Text -> Text)
+  -- ^ fill-in answer key and a normalization function
+  | Alternatives Selection P.ListAttributes Alts
+  -- ^ list of multiple choices 
 
+data Selection = Single | Multiple
 
--- | answers to a quiz;
--- map from question id to (possibly many) selected options
-newtype Answers = Answers (HashMap String [Label])
-  deriving Show
+type Alts =  [(Bool, [P.Block])]
+  -- ^ alternatives: right/wrong and description
 
-emptyAnswers :: Answers
-emptyAnswers = Answers HashMap.empty
-
--- | instances for converting to/from JSON
-instance ToJSON Answers where
-  toJSON (Answers m) = toJSON m
-
-instance FromJSON Answers where
-  parseJSON v = Answers <$> parseJSON v
-
-
--- | convert quiz answers from/to text
-decodeAnswers :: Text -> Maybe Answers
-decodeAnswers = Aeson.decode . LB.fromStrict . T.encodeUtf8 
-
-encodeAnswers :: Answers -> Text
-encodeAnswers = T.decodeUtf8 . LB.toStrict . Aeson.encode 
+-- | answers to a quiz 
+-- mapping from question identifier to (possibly many) answers
+newtype Answers = Answers (HashMap String [Key])
+  deriving (Show, Semigroup, Monoid, ToJSON, FromJSON)
 
 
--- | get quiz answers from form parameters 
---
-getFormAnswers :: MonadSnap m => m Answers
-getFormAnswers = do
-  m <- getParams
-  let m'= HashMap.fromList [ (B.toString k, map B.toString vs)
-                           | (k,vs)<-Map.assocs m ]
-  return (Answers m')
+answerKeys :: Choices -> [Key]
+answerKeys (FillIn key _)
+  = [T.unpack key]
+answerKeys (Alternatives _ attrs alts)
+  = [key | (key, (True,_)) <- zip (listLabels attrs) alts]
+
+
+type Key = String
+
+-- | a quiz together with answers
+data QuizAnswers
+  = QuizAnswers { quiz :: Text
+                , answers :: Answers
+                } deriving (Generic, Show)
+
+instance ToJSON QuizAnswers where
+  toEncoding = Aeson.genericToEncoding Aeson.defaultOptions
+
+instance FromJSON QuizAnswers  -- derived implementation
+
+-- | lookup selections for a specific question
+lookupAnswer :: Question -> Answers -> [Key]
+lookupAnswer Question{..} (Answers hm) 
+  = fromMaybe [] $ HashMap.lookup identifier hm
+
+-- | convert an already shuffled quiz into a Pandoc document 
+quizToDocument :: Quiz -> P.Pandoc
+quizToDocument Quiz{..}
+  = P.doc (P.fromList preamble <> mconcat (map questionDoc questions))
+
+questionDoc :: Question -> P.Blocks
+questionDoc Question{..}
+  =  P.fromList (choicesHeader description (answerKeys choices)) <>
+     choicesAlts choices
+
+choicesHeader
+  (P.Header n (id,classes,kvs) inlines : rest) answers
+  = P.Header n (id,classes,kvs') inlines : rest
+  where kvs' = [("answers", a) | a<-answers] ++ kvs
+choicesHeader _ _
+  = error "choicesHeader: question must begin with header"
+
+choicesAlts :: Choices -> P.Blocks
+choicesAlts (FillIn _ _) = mempty
+choicesAlts (Alternatives _ attrs alts)
+  = P.orderedListWith attrs [P.fromList blocks | (_, blocks)<-alts]
+
+
+quizToText :: Quiz -> Text
+quizToText q =
+  case P.runPure (P.writeMarkdown pandocWriterOptions $ quizToDocument q)
+  of
+    Left err -> T.pack (show err)
+    Right txt -> txt
+
+pandocWriterOptions :: P.WriterOptions
+pandocWriterOptions
+  = P.def { P.writerExtensions = P.pandocExtensions
+          , P.writerSetextHeaders = False
+          }       
   
-
-lookupAnswers :: Question -> Answers -> [Label]
-lookupAnswers (Question (header:_) _ _) (Answers hm) 
-  = fromMaybe [] $ do name <- identifier header
-                      HashMap.lookup name hm
-
 
 -- | deterministic shuffle questions & answers in a quiz
 shuffleQuiz :: UserLogin -> Page -> Quiz
 shuffleQuiz uid page
-  = runRand (shuffle2 =<< shuffle1 (makeQuiz page)) seed'
+  = Rand.run (seed+salt) (makeQuiz page >>= shuffle1 >>= shuffle2) 
   where
     meta = pageMeta page
-    seed = fromMaybe (0 :: Int) (lookupFromMeta "shuffle-seed" meta)
-    seed'= hashWithSalt seed uid
+    seed = fromMaybe (hash uid) $ lookupFromMeta "shuffle-seed" meta
+    salt = fromMaybe 0 $ lookupFromMeta "shuffle-salt" meta
     opt1 = fromMaybe False $ lookupFromMeta "shuffle-questions" meta
     opt2 = fromMaybe False $ lookupFromMeta "shuffle-answers" meta
     shuffle1 = if opt1 then shuffleQuestions else return
-    shuffle2 = if opt2 then shuffleAnswers else return 
-    
+    shuffle2 = if opt2 then shuffleAlternatives else return 
+
 
 -- | split up a list of blocks into questions
-makeQuiz :: Page -> Quiz
-makeQuiz (Pandoc _ blocks) =  Quiz blocks' (questions blocks'')
+makeQuiz :: Page -> Rand Quiz
+makeQuiz (P.Pandoc _ blocks)
+  = Quiz blocks' <$> sequence (map Rand.choose groups)
   where
-    blocks' = takeWhile (not . header) blocks
-    blocks''= dropWhile (not . header) blocks
+    blocks' = takeWhile (not.isQuestion) blocks
+    blocks''= dropWhile (not.isQuestion) blocks
+    groups  = groupQuestions (makeQuestions blocks'')
+
+-- | group together questions with the same group attribute
+groupQuestions :: [Question] -> [[Question]]
+groupQuestions
+  = groupBy (\q q' -> name q `eq` name q')
+  where
+    name = lookup "group" . headerAttrs . questionHeader 
+    eq (Just n) (Just n') = n == n'
+    eq _        _         = False
+
+-- | split a list of blocks into questions
+makeQuestions :: [P.Block] -> [Question]
+makeQuestions [] = []
+makeQuestions (block : blocks)
+  | isQuestion block =
+    makeQuestion block blocks' : makeQuestions blocks''
+  | otherwise =
+    makeQuestions blocks''
+  where
+    blocks'  = takeWhile (not . isQuestion) blocks
+    blocks'' = dropWhile (not . isQuestion) blocks
 
 
-questions :: [Block] -> [Question]
-questions [] = []
-questions (block : blocks)
-  | header block = makeQuestion block blocks' : questions blocks''
-  | otherwise    = questions blocks
-  where
-    blocks'  = takeWhile (not . header) blocks
-    blocks'' = dropWhile (not . header) blocks
+
+-- | get the header block from a question
+questionHeader :: Question -> P.Block
+questionHeader Question{..} = head description
+
 
 -- | check if a block is a question header
-header :: Block -> Bool
-header = ("question" `elem`) . classes 
+isQuestion :: P.Block -> Bool
+isQuestion b = "question" `elem` headerClasses b
 
--- | class atributes for a header block
-classes :: Block -> [String]
-classes (Header _ (_, classes, _) _) = classes
-classes _                            = []
+-- | get class atributes for a header block
+headerClasses :: P.Block -> [String]
+headerClasses (P.Header _ (_, classes, _) _) = classes
+headerClasses _                            = []
 
-attributes :: Block -> [(String,String)]
-attributes (Header _ (_, _, kvs) _) = kvs
-attributes _                        = []
+headerAttrs :: P.Block -> [(String,String)]
+headerAttrs (P.Header _ (_, _, kvs) _) = kvs
+headerAttrs _                        = []
 
-identifier :: Block -> Maybe String
-identifier (Header _ (id, _,_) _) = Just id
-identifier _                      = Nothing
+headerIdent :: P.Block -> Maybe String
+headerIdent (P.Header _ (id, _,_) _) = Just id
+headerIdent _                        = Nothing
 
-removeKey :: String -> Block -> Block
-removeKey k (Header n (id, classes, kvs) inlines)
-  = Header n (id, classes, filter (\(k',_) ->  k' /= k) kvs) inlines
+removeKey :: String -> P.Block -> P.Block
+removeKey k (P.Header n (id, classes, kvs) inlines)
+  = P.Header n (id, classes, filter (\(k',_) ->  k' /= k) kvs) inlines
 removeKey _ b = b
 
-makeQuestion :: Block -> [Block] -> Question
-makeQuestion header body
-  = Question (header':preamble) attrs alts
+
+makeQuestion :: P.Block -> [P.Block] -> Question
+makeQuestion header rest
+  = Question { identifier = fromMaybe "" (headerIdent header)
+             , description = (header':prefix) ++ posfix
+             , choices =
+                 if  "fillin" `elem` headerClasses header
+                 then FillIn (T.concat $ map T.pack answers) normalize
+                 else Alternatives multiples attrs alts
+             }
   where
-    preamble = takeWhile (not . list) body
-    (attrs,items) = fromMaybe (emptyAttrs,[]) $
-                    getFirst $ query answers body
-    key = [v | ("answer", v) <- attributes header]
-    alts = [ (label, truth, item)
-           | (label,item) <- zip (listLabels attrs) items
-           , let truth = label `elem` key
-           ]
     header' = removeKey "answer" header
-    emptyAttrs = (1, DefaultStyle, DefaultDelim)
-    list (OrderedList _ _) = True
-    list _                 = False
-    answers (OrderedList attrs items)  = First (Just (attrs, items))
-    answers _                          = First Nothing
+    answers = [a | ("answer",a) <- headerAttrs header]
+    normalize = T.filter (not.isSpace) 
+    prefix = takeWhile (not . isList) rest
+    posfix = drop 1 $ dropWhile (not . isList) rest
+    (attrs,items) = fromMaybe (emptyAttrs,[]) $
+                    getFirst $ P.query getList rest
+    alts = [ (truth, item)
+           | (label, item) <- zip (listLabels attrs) items
+           , let truth = label `elem` answers
+           ]
+    multiples
+      | "multiple" `elem` headerClasses header = Multiple
+      | otherwise                              = Single
+    emptyAttrs = (1, P.DefaultStyle, P.DefaultDelim)
+    isList (P.OrderedList _ _) = True
+    isList _                   = False
+    getList (P.OrderedList attrs items)  = First (Just (attrs, items))
+    getList _                            = First Nothing
+    
 
 
 -- | shuffle questions and answers
 shuffleQuestions :: Quiz -> Rand Quiz
 shuffleQuestions (Quiz preamble questions)
-  = Quiz preamble <$> shuffle questions
+  = Quiz preamble <$> Rand.shuffle questions
 
-shuffleAnswers :: Quiz -> Rand Quiz
-shuffleAnswers (Quiz preamble questions)
-  = Quiz preamble <$> mapM shuffleSingle questions
+-- | shuffle alternatives in multiple choice questions
+shuffleAlternatives :: Quiz -> Rand Quiz
+shuffleAlternatives (Quiz preamble questions)
+  = Quiz preamble <$> mapM shuffle questions
+  where
+    shuffle q@Question{..} = case choices of
+      FillIn{} ->
+        return q   -- no shuffling required
+      Alternatives multiples attrs alts -> do
+        alts' <- Rand.shuffle alts -- shuffle alternatives
+        return q { choices = Alternatives multiples attrs alts' }
 
-
-shuffleSingle :: Question -> Rand Question
-shuffleSingle (Question preamble attrs alts) = do
-  alts' <- shuffle alts
-  return (Question preamble attrs alts')
-
-
+-----------------------------------------------------------
+-- Pandoc stuff
+-----------------------------------------------------------
 -- | enumerate Pandoc list labels
-listLabels :: ListAttributes -> [String]
+listLabels :: P.ListAttributes -> [String]
 listLabels (start, style, _) = drop (start-1) $ listNumbers style
 
-listNumbers :: ListNumberStyle -> [String]
-listNumbers LowerAlpha = map (:"") ['a'..'z']
-listNumbers UpperAlpha = map (:"") ['A'..'Z']
-listNumbers LowerRoman = lowerRomans
-listNumbers UpperRoman = upperRomans
+listNumbers :: P.ListNumberStyle -> [String]
+listNumbers P.LowerAlpha = map (:"") ['a'..'z']
+listNumbers P.UpperAlpha = map (:"") ['A'..'Z']
+listNumbers P.LowerRoman = lowerRomans
+listNumbers P.UpperRoman = upperRomans
 listNumbers _          = map show [1::Int .. 100]
 
 
@@ -212,47 +295,3 @@ numerals =
     (10, "x"),  (9, "ix"), (5, "v"), (4, "iv"), (1, "i") ]
 
 
------------------------------
-
-quizSplices :: Monad m => Quiz -> Answers -> Splices (I.Splice m)
-quizSplices (Quiz preamble questions) answers = do
-  "quiz-preamble" ## return (blocksToHtml preamble)
-  "questions" ## I.mapSplices (I.runChildrenWith . questionSplice answers) questions
-
-
--- | splices for questions with answer key
-questionSplice :: Monad m => Answers -> Question -> Splices (I.Splice m)
-questionSplice answers question@(Question preamble@(header:_) attrs alts) = do
-  let multiples = "multiple" `elem` classes header
-  let responses = lookupAnswers question answers
-  let answers = sort [ label
-                     | (label, (_,True,_)) <- zip (listLabels attrs) alts
-                     ]
-  "question-preamble" ## return (blocksToHtml preamble)
-  "question-name" ## maybe (return []) (I.textSplice . T.pack) (identifier header)
-  "list-type" ## I.textSplice (listType attrs)
-  "list-start" ## I.textSplice (listStart attrs)
-  "onclick-callback" ## if multiples then return []
-                        else I.textSplice "onlyOne(this)"
-  "answer-key" ## I.textSplice (T.pack $ concat $ intersperse "," answers)
-  "alternatives" ##
-    I.mapSplices (I.runChildrenWith . altSplices responses) alts
-  where
-    altSplices responses (label,truth,item) = do
-      "alternative-label" ## I.textSplice (T.pack label)
-      "alternative" ## return (blocksToHtml item)
-      "if-checked" ## I.ifElseISplice (label `elem` responses)
-      "if-correct" ## I.ifElseISplice truth
-      
-
-listType :: ListAttributes -> Text
-listType (_, style, _)
-  = case style of
-      LowerAlpha -> "a"
-      UpperAlpha -> "A"
-      LowerRoman -> "i"
-      UpperRoman -> "I"
-      _          -> "1"
-
-listStart :: ListAttributes  -> Text
-listStart (n, _, _) = T.pack (show n)

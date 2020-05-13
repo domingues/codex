@@ -1,20 +1,27 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
-
+{-# LANGUAGE RecordWildCards #-}
+{-
+-- | Tester monad for writing testers for submissions
+-- | allows access to an environment, running IO and failure (i.e. passing)
+--
+-}
 module Codex.Tester.Monad (
   Tester,
   runTester,
   configured,
   maybeConfigured,
-  testLimits,
+  configLimits,
   testConfig,
-  testPath,
+  testFilePath,
   testCode,
   testPage,
   testMetadata,
   testUser,
   metadata,
+  metadataWithDefault,
+  metadataPath,
   BuildCache,
   initBuildCache,
   buildRun,
@@ -27,16 +34,18 @@ module Codex.Tester.Monad (
 import           Data.Configurator.Types
 import qualified Data.Configurator as Conf
 
-import           Data.Monoid
 import           Control.Applicative
 import           Control.Monad.Trans
-import           Control.Monad.Trans.Maybe
+import           Control.Monad.Trans.Maybe 
 import           Control.Monad.Trans.Reader
 
-import           Codex.Types (Code, UserLogin)
+import           Codex.Types (Page, Code, UserLogin)
+import           Codex.Submission.Types
 import           Text.Pandoc (Meta)
 import           Codex.Page
 import           Codex.Tester.Limits
+import           System.FilePath
+import           Data.Maybe (fromMaybe)
 
 import           Data.Hashable
 import qualified Data.Map.Strict                  as Map
@@ -53,34 +62,37 @@ newtype Tester a
   = Tester { unTester :: ReaderT TestEnv (StateT TestHash (MaybeT IO)) a }
   deriving (Functor, Monad, Applicative, Alternative, MonadIO)
 
--- | testing environment
+-- | the testing environment
 data TestEnv
-   = TestEnv { _testConfig :: Config   -- ^ static configuration file
-             , _testPage :: Page       -- ^ exercise page
-             , _testPath :: FilePath   -- ^ file path to exercise page
-             , _testCode :: Code       -- ^ submited language & code
-             , _testUser :: UserLogin  -- ^ user
+   = TestEnv { _testConfig :: Config       -- ^ configuration record
+             , _testFilePath :: FilePath   -- ^ file path to exercise page
+             , _testPage :: Page           -- ^ exercise page
+             , _testSubmission :: Submission 
              , _testBuildCache :: BuildCache
              } 
 
 
 -- | run function for testers
-runTester ::
-  Config -> BuildCache -> Page -> FilePath -> Code -> UserLogin -> Tester a
-  -> IO (Maybe a)
-runTester cfg cache page path code user action
-  = runMaybeT $ evalStateT (runReaderT (unTester action) (TestEnv cfg page path code user cache)) 0
+runTester :: Tester a
+          -> Config -> BuildCache -> FilePath -> Page -> Submission
+          -> IO (Maybe a)
+runTester m cfg cache filepath page sub 
+  = let env = TestEnv cfg filepath page sub cache
+    in runMaybeT $ evalStateT (runReaderT (unTester m) env) 0
 
 
--- | fetch parameters from enviroment
+-- | fetch parameters from environment
 testConfig :: Tester Config
 testConfig = Tester (asks _testConfig)
 
-testPath :: Tester FilePath
-testPath = Tester (asks _testPath)
+testFilePath :: Tester FilePath
+testFilePath = Tester (asks _testFilePath)
 
 testCode :: Tester Code
-testCode = Tester (asks _testCode)
+testCode = Tester (submitCode <$> asks _testSubmission)
+
+testUser :: Tester UserLogin
+testUser = Tester (submitUser <$> asks _testSubmission)
 
 testPage :: Tester Page
 testPage = Tester (asks _testPage)
@@ -88,16 +100,23 @@ testPage = Tester (asks _testPage)
 testMetadata :: Tester Meta
 testMetadata = pageMeta <$> testPage
 
-testUser :: Tester UserLogin
-testUser = Tester (asks _testUser)
 
-
--- | fetch a metadata value; return Nothing if key not present
+-- | get a medata value given the key
 metadata :: FromMetaValue a => String -> Tester (Maybe a)
 metadata key = do
   meta <- testMetadata
   return (lookupFromMeta key meta)
 
+-- | get an relative path from metadata 
+metadataPath :: String -> Tester (Maybe FilePath)
+metadataPath key = do
+  dir <- takeDirectory <$> testFilePath  -- directory for exercise page
+  fmap (dir </>) <$> metadata key     -- lookup and make a relative path
+
+
+-- | get a optional value given the default
+metadataWithDefault :: FromMetaValue a => String -> a -> Tester a
+metadataWithDefault key def = fromMaybe def <$> metadata key
 
 -- | fetch a configured value; return Nothing if key not present
 maybeConfigured :: Configured a => Name -> Tester (Maybe a)
@@ -113,14 +132,14 @@ configured key = do
   liftIO $ Conf.require cfg key
 
 
--- | get configured limits from the tester environment
+-- | ask configured limits from the tester environment
 -- overrides default config with the specific one
-testLimits :: Name -> Tester Limits
-testLimits key = do
+configLimits :: Name -> Tester Limits
+configLimits key = do
   cfg <- testConfig
   liftIO $ do
-    def  <- configLimits (Conf.subconfig "limits" cfg)
-    spec <- configLimits (Conf.subconfig key cfg)
+    def  <- lookupLimits (Conf.subconfig "limits" cfg)
+    spec <- lookupLimits (Conf.subconfig key cfg)
     return (spec <> def)
 
 
@@ -159,7 +178,7 @@ buildRun buildProblem runTest = do
   dependsOn ("tester" :: String, tester)
   buildCache <- Tester (asks _testBuildCache)
   hash <- Tester (lift get)
-  path <- testPath
+  path <- testFilePath
   liftIO $ buildRunIO buildCache path hash buildProblem runTest
 
 

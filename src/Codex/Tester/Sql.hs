@@ -1,16 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
-
+--
+-- | Test SQL queries using MySQL interpreter
+--
 module Codex.Tester.Sql (
   sqlTester
   ) where
 
 import           Codex.Tester
-import           Control.Applicative
-import           Control.Exception
+import           Control.Applicative ((<|>))
+import qualified Data.Text as T
+import           Control.Exception (throwIO)
 import           Data.Char
-import           Data.Text           (Text)
-import qualified Data.Text           as T
-
+import           Data.Text (Text)
 
 sqlTester :: Tester Result
 sqlTester = sqlSelectTester <|> sqlEditTester <|> sqlSchemaTester
@@ -21,7 +22,7 @@ sqlSelectTester = tester "select" $ do
   Code lang src <- testCode
   guard (lang == "sql")
   ---
-  evaluator <- configured "language.sql.evaluator.select"
+  evaluator <- configured "language.sql.evaluators.select"
   (dbNameArg, run) <- do
     initFile <- metadataFile "db-init-file"
     case initFile of
@@ -37,7 +38,7 @@ sqlSelectTester = tester "select" $ do
                 ]
         dependsOn args
         dbName <- do
-          path <- testPath
+          path <- testFilePath
           dbPrefix <- confArg "prefix"
           let name = map (\x -> if isAlphaNum x then x else '_') path
           return $ maybe name (\p -> p ++ "_" ++ name) dbPrefix
@@ -73,7 +74,7 @@ sqlEditTester = tester "edit" $ do
   Code lang src <- testCode
   guard (lang == "sql")
   ---
-  evaluator <- configured "language.sql.evaluator.edit"
+  evaluator <- configured "language.sql.evaluators.edit"
   args <- concat <$> sequence [
             joinMaybe "-H" <$> confArg "host"
           , joinMaybe "-P" <$> confArg "port"
@@ -97,7 +98,7 @@ sqlSchemaTester = tester "schema" $ do
   Code lang src <- testCode
   guard (lang == "sql")
   ---
-  evaluator <- configured "language.sql.evaluator.schema"
+  evaluator <- configured "language.sql.evaluators.schema"
   args <- concat <$> sequence [
             joinMaybe "-H" <$> confArg "host"
           , joinMaybe "-P" <$> confArg "port"
@@ -143,11 +144,10 @@ metadataFile path = do
   case value of
     Nothing -> return Nothing
     Just v -> do
-      tp <- testPath
+      tp <- testFilePath
       return $ Just (takeDirectory tp </> v)
 
 
 confArg key = maybeConfigured $ "language.sql.args." <> key
 joinMaybe key = maybe [] (\v -> [key, v])
 fuseMaybe key = maybe [] (\v -> [key ++ v])
-

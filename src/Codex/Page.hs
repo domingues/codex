@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 {-
   Definitions for document and exercise pages
 -}
@@ -16,20 +18,15 @@ import           Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Map as Map
-import           Data.Monoid
-import           Control.Applicative
-import           Control.Monad.IO.Class
 import           Data.List (intersperse)
 
+import           Control.Applicative
+import           Control.Monad.IO.Class
+
+
 import           Codex.Types
-import           Codex.Time
+import           Codex.Policy
 
-
---
--- a Page is a synonym for a Pandoc document 
--- either an active exercise or a passive document (e.g. an index)
---
-type Page = Pandoc
 
 emptyPage :: Page
 emptyPage = Pandoc nullMeta []
@@ -42,15 +39,23 @@ pageMeta (Pandoc meta _) = meta
 pageDescription :: Page -> [Block]
 pageDescription (Pandoc _ blocks) = blocks
 
--- lookup title either as metadata or in the first header
 pageTitle :: Page -> Maybe [Inline]
 pageTitle p
+  = case pageTitleBlocks p of
+      (Header _ _ h : _) -> Just h
+      _                  -> Nothing
+
+-- | lookup title in metadata or take the first header (if any)
+pageTitleBlocks :: Page -> [Block]
+pageTitleBlocks p
   = case docTitle (pageMeta p) of
       [] -> firstHeader (pageDescription p)
-      inlines -> Just inlines
+      inlines -> [Header 1 nullAttr inlines]
   where
-    firstHeader :: [Block] -> Maybe [Inline]
-    firstHeader blocks = listToMaybe [h | Header _ _ h <- blocks]
+    firstHeader :: [Block] -> [Block]
+    firstHeader blocks = take 1 [block | block@(Header _ _ _) <- blocks]
+
+
 
 
 -- list of accepted languages for an exercise
@@ -70,23 +75,21 @@ languages meta =
 pageDefaultText :: Page -> Maybe Text
 pageDefaultText = lookupFromMeta "code" . pageMeta
 
--- is it an exercise page? a quiz page?
-isExercise, isQuiz :: Page -> Bool
-isExercise  = isJust . pageTester
-isQuiz page = pageTester page == Just "quiz" 
-
-
 pageTester :: Page -> Maybe Text
 pageTester = lookupFromMeta "tester" . pageMeta
 
--- time interval for valid submissions
-pageInterval :: Page -> Interval Time
-pageInterval = metaInterval . pageMeta
+-- | get the policy constraints for submissions
+pagePolicy :: Page -> Either Text (Policy TimeExpr)
+pagePolicy page =
+  case lookupFromMeta "valid" (pageMeta page) of
+    Nothing -> return []
+    Just txt -> parsePolicy txt
+  
+-- | allow invalid submissions?
+pageAllowInvalid :: Page -> Bool
+pageAllowInvalid p
+  = fromMaybe True $ lookupFromMeta "allow-invalid" $ pageMeta p
 
-metaInterval :: Meta -> Interval Time
-metaInterval meta
-  = fromMaybe (Interval Nothing Nothing) $
-    (lookupFromMeta "valid" meta >>= parseInterval)
 
 -- | give feedback for submissions?
 pageFeedback :: Page -> Bool
@@ -195,28 +198,47 @@ pageToHtml doc = case result of
 blocksToHtml :: [Block] -> [Node]
 blocksToHtml blocks = pageToHtml (Pandoc nullMeta blocks)
 
+  
+  -- pre <- T.readFile (takeDirectory filepath </> "prelude.md")
+  --    `catch`(\(_ :: IOException) -> return "")
+
 
 -- | read a file and parse markdown to a Pandoc document
 readMarkdownFile :: MonadIO m => FilePath -> m Pandoc
 readMarkdownFile filepath = liftIO $ do
   txt <- T.readFile filepath
-  removeHTMLComments <$> runIOorExplode (readMarkdown opts txt)
-  where
-    opts = def { readerExtensions = pandocExtensions
-               }
+  return $ case parseDocument txt of
+             Left err -> docError err
+             Right (doc,msgs) -> docWarnings msgs  <> doc
 
---
--- | remove raw HTML comments from pages
---
-removeHTMLComments :: Page -> Page
-removeHTMLComments = walk removeInline . walk removeBlock
-  where removeInline (RawInline (Format "html") str)
-          | comment str = Space
-        removeInline elm = elm
-        removeBlock (RawBlock (Format "html") str)
-          | comment str = Null
-        removeBlock blk = blk
-        -- test a comment string
-        -- comment str = take 4 str == "<!--" 
-        comment ('<':'!':'-':'-':_) = True
-        comment _                   = False
+parseDocument :: Text -> Either PandocError (Pandoc, [LogMessage])
+parseDocument txt = runPure $ do
+  doc <- readMarkdown pandocReaderOptions txt
+  msgs <- getLog
+  return (doc, msgs)
+  
+
+pandocReaderOptions :: ReaderOptions
+pandocReaderOptions
+  = def { readerExtensions = pandocExtensions
+        , readerStripComments = True
+        }
+
+
+-- | report error and warning messages
+docError :: PandocError -> Pandoc
+docError err
+  = Pandoc mempty
+    [Div ("", ["errors"], []) [Para [Str "ERROR:", Space, Str (show err)]]]
+    
+docWarnings :: [LogMessage] -> Pandoc
+docWarnings []
+  = mempty
+docWarnings msgs
+  = Pandoc mempty
+    [Div ("", ["warnings"], [])
+      [Para [Str "WARNING:", Space, Str (show msg)] | msg <- msgs]]
+
+
+
+

@@ -14,7 +14,7 @@ module Codex.AdminHandlers(
  
 import           Snap.Core hiding (path)
 import           Snap.Snaplet.Heist
-import qualified Snap.Snaplet.SqliteSimple                   as S
+-- import qualified Snap.Snaplet.SqliteSimple                   as S
 import           Snap.Snaplet.Router
 import           Snap.Util.FileServe hiding (mimeTypes)
 import           Snap.Util.FileUploads
@@ -62,7 +62,8 @@ import           Codex.Printout
 -- ensure that a user with admin privileges is logged in
 --
 handleBrowse :: FilePath -> Codex ()
-handleBrowse rqpath = withAdmin $ do
+handleBrowse rqpath = do
+  requireAdmin
   handleMethodOverride
     (method GET (handleGet rqpath)  <|>
      method POST (handleUpload rqpath) <|>
@@ -80,7 +81,7 @@ handleGet rqpath = file <|> directory <|> notFound
       guardDirectoryExists filepath
       entries <- liftIO (listDir filepath)
       tz <- liftIO getCurrentTimeZone
-      renderWithSplices "_file-list" $ do
+      renderWithSplices "_file_list" $ do
         fileUrlSplices rqpath
         listingSplices tz rqpath entries
         messageSplices []
@@ -97,7 +98,7 @@ handleGet rqpath = file <|> directory <|> notFound
                "file-contents" ## I.textSplice contents
                "if-image-file" ## I.ifElseISplice (B.isPrefixOf "image" mime)
                "if-text-file" ## I.ifElseISplice (B.isPrefixOf "text" mime)
-      renderWithSplices "_file-edit" (fileUrlSplices rqpath >>
+      renderWithSplices "_file_edit" (fileUrlSplices rqpath >>
                                       pageUrlSplices rqpath >>
                                       fileSplices >>
                                       textEditorSplice)
@@ -111,7 +112,7 @@ listingSplices tz path list =
           fileUrlSplices (path </> name)
           "file-name" ## I.textSplice (T.pack name)
           "file-type" ## I.textSplice (T.decodeUtf8 mime)
-          "file-modified" ## utcTimeSplice tz time
+          "file-modified" ## localTimeSplice tz time
           "if-text" ## ifElseISplice (B.isPrefixOf "text" mime)
           "if-dir" ## ifElseISplice (mime == "DIR")
 
@@ -159,7 +160,7 @@ handleCreate base = do
 
 handleUpload :: FilePath -> Codex ()
 handleUpload rqpath = do
-  liftIO $ putStrLn ("handleUpload " ++ show rqpath)
+  --  liftIO $ putStrLn ("handleUpload " ++ show rqpath)
   root <- getDocumentRoot
   let filepath = root </> rqpath
   c <- liftIO $ doesDirectoryExist filepath
@@ -170,7 +171,7 @@ handleUpload rqpath = do
     (doUpload filepath)
   entries <- liftIO (listDir filepath)
   tz <- liftIO getCurrentTimeZone
-  renderWithSplices "_file-list" (listingSplices tz rqpath entries >>
+  renderWithSplices "_file_list" (listingSplices tz rqpath entries >>
                                   messageSplices (catMaybes msgs))
 
 
@@ -211,14 +212,16 @@ handleRename rqpath = do
 --  | Handle requests for submission listing
 --
 handleSubmissionList :: Codex ()
-handleSubmissionList =  withAdmin $ handleMethodOverride $ do
+handleSubmissionList = do
+  requireAdmin  
   patts <- getPatterns
   page <- fromMaybe 1 <$> readParam "page"
   order <- fromMaybe Ascending <$> readParam "order"
-  methods [GET,POST] (listSubmissions patts order page)
+  handleMethodOverride $ do 
+    methods [GET,POST] (listSubmissions patts order page)
     <|>
-   method PATCH (reevalSubmissions patts order >>
-                 listSubmissions patts order page)
+    method PATCH (reevalSubmissions patts order >>
+                    listSubmissions patts order page)
     <|>
     method (Method "CANCEL") (cancelPending >>
                               listSubmissions patts order page)
@@ -241,7 +244,7 @@ listSubmissions patts order reqpage = do
   let offset = (page - 1) * entries  
   subs <- filterSubmissions patts order entries offset
   tz <- liftIO getCurrentTimeZone
-  renderWithSplices "_submission-list" $ do
+  renderWithSplices "_submission_list" $ do
     patternSplices patts
     "page" ## I.textSplice (T.pack $ show page)
     "order" ## I.textSplice (T.pack $ show order)
@@ -259,14 +262,13 @@ listSubmissions patts order reqpage = do
                                  ("order", Just (T.pack $ show order)) :
                                 patts)
 
--- | Re-evaluate selected submissions 
+-- | Start re-evaluation of selected submissions 
 reevalSubmissions :: Patterns -> Codex.Submission.Ordering -> Codex ()
 reevalSubmissions patts order  = do
+  cancelPending
   count <- countSubmissions patts
   subs  <- filterSubmissions patts order count 0
-  sqlite <- S.getSqliteState
-  liftIO $ markEvaluating sqlite (map submitId subs)
-  reevaluate subs
+  evaluateMany subs
 
 
 
@@ -290,15 +292,15 @@ exportSubmissions' patts ord filetpl sep  = do
   return tmpPath
   where
     header = intercalate sep ["id", "user_id", "path", "language",
-                              "classify", "timing", "received"]
+                              "status", "policy", "received"]
     output :: Handle -> () -> Submission -> IO ()
     output h _ Submission{..} = do
       let row = intercalate sep [show submitId,
                                  show submitUser,
                                  show submitPath,
                                  show (codeLang submitCode),
-                                 show (resultClassify submitResult),
-                                 show submitTiming,
+                                 show (resultStatus submitResult),
+                                 show submitCheck,
                                  show (show submitTime)
                                 ]
       hPutStrLn h row
@@ -308,32 +310,39 @@ exportSubmissions' patts ord filetpl sep  = do
 
 -- | Handle admin requests for a single submission
 handleSubmissionAdmin :: SubmitId -> Codex ()
-handleSubmissionAdmin sid = withAdmin $ handleMethodOverride $ do
-    sub <- require (getSubmission sid) <|> notFound
-    method GET (report sub) <|>
-      method PATCH (reevaluate sub) <|>
+handleSubmissionAdmin sid = do
+  requireAdmin
+  sub <- require (getSubmission sid) <|> notFound
+  handleMethodOverride $ do 
+      method GET (report sub)
+      <|>
+      method PATCH (reevaluate sub)
+      <|>
       method DELETE (delete sub)
   where
     -- get report on a submission
+    report :: Submission -> Codex ()
     report sub = do
       root <- getDocumentRoot
-      page <- liftIO $ readMarkdownFile (root </>submitPath sub)
+      page <- readMarkdownFile (root </>submitPath sub)
       tz <- liftIO getCurrentTimeZone
-      renderWithSplices "_submission-admin" $ do
+      renderWithSplices "_submission_admin" $ do
         pageSplices page
         submitSplices tz sub
 
     -- delete a submission
+    delete :: Submission -> Codex ()
     delete sub = do
       deleteSubmission (submitId sub)
       redirectURL SubmissionList
 
     -- revaluate a single submission
+    reevaluate :: Submission -> Codex ()
     reevaluate sub = do
-      let sid = submitId sub
-      sqlite <- S.getSqliteState
-      liftIO $ markEvaluating sqlite [sid]
+      -- let sid = submitId sub
+      -- sqlite <- S.getSqliteState
+      -- liftIO $ markEvaluating sqlite [sid]
       evaluate sub
-      redirectURL (SubmissionAdmin sid)
+      redirectURL (SubmissionAdmin (submitId sub))
 
 

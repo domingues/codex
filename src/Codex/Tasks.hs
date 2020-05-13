@@ -1,30 +1,28 @@
 {-# LANGUAGE RecordWildCards #-}
-{- 
--- Manage a thread pool for evaluation tasks
--}
-module Codex.Tasks where
+--
+-- Manage asynchronous evaluation tasks
+--
+module Codex.Tasks
+  ( module Control.Concurrent,
+    withQSem,
+    PendingQ,
+  ) where
 
+import           Control.Monad.IO.Class
 import           Control.Concurrent
 import           Control.Exception (bracket_)
 
+-- | a queue for pending evaluations
+type PendingQ = MVar [ThreadId]
 
--- | a mutable list of threads for pending evaluations
-type Tasks = MVar [ThreadId]
-
--- | for a thread locked with a semaphore
-forkSingle :: QSem -> IO () -> IO ThreadId
-forkSingle semph action
-  = forkIO $ bracket_ (waitQSem semph) (signalQSem semph) action
-
--- | fork several threads with a semaphore
--- allows possible canceling
-forkMany :: QSem -> Tasks -> [IO ()] -> IO ()
-forkMany semph tasks actions =
-  modifyMVar_ tasks $ \tids -> do
-    mapM_ killThread tids
-    tids' <- mapM (forkSingle semph) actions
-    return tids'
+-- | bracket an IO action under a quantity semaphore
+withQSem ::  MonadIO m => QSem -> IO () -> m ()
+withQSem qsem action
+  =  liftIO $ bracket_ (waitQSem qsem) (signalQSem qsem) action 
 
 
-makeTasks :: Int -> IO (QSem, Tasks)
-makeTasks n = (,) <$> newQSem n <*> newMVar []
+
+
+
+
+

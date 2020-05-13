@@ -1,9 +1,9 @@
 
 PANDOC= pandoc
 
-PDF_OPTIONS= -s --highlight-style monochrome --number-section
+PDF_OPTIONS= -s --smart --highlight-style monochrome --number-section
 
-HTML_OPTIONS= -s --mathjax=https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-MML-AM_CHTML --number-sections
+HTML_OPTIONS= -s -smart  --mathjax=https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-MML-AM_CHTML --number-sections -H styles.html
 
 %.html : %.md
 	$(PANDOC) $(HTML_OPTIONS) $< -o $@
@@ -12,5 +12,5 @@ HTML_OPTIONS= -s --mathjax=https://cdn.mathjax.org/mathjax/latest/MathJax.js?con
 	$(PANDOC) $(PDF_OPTIONS) $< -o $@
 
 
-all : USER-GUIDE.pdf USER-GUIDE.html
+all :  USER-GUIDE.html   ## USER-GUIDE.pdf
 

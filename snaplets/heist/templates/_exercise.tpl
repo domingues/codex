@@ -1,69 +1,69 @@
-<bind tag="icon-accepted"><img src="/static/icons/16x16/accepted.png"/></bind>
-<bind tag="icon-rejected"><img src="/static/icons/16x16/rejected.png"/></bind>
 <bind tag="icon-warning"><img src="/static/icons/16x16/warning.png"/></bind>
-<bind tag="icon-overdue"><img src="/static/icons/16x16/overdue.png"/></bind>
 <bind tag="icon-editor"><img src="/static/icons/16x16/editor.png"/></bind>
-<bind tag="time-icon"><if-valid><else/><icon-overdue/></if-valid></bind>
+<bind tag="valid-icon"><if-valid><else/><icon-warning/></if-valid></bind>
+
+<apply template="_browse">
+  <if-parent>
+    <li><a href="${page-parent-url}" class="icon"
+	   title="Voltar à página anterior">&curvearrowleft;</a></li>
+  </if-parent>
+  <li><button class="tablinks" onclick="openTab(event, 'description-tab')" id="description">Descrição</button></li>
+  <li><button class="tablinks" onclick="openTab(event, 'editor-tab')">Editor</button></li>
+  <li><button class="tablinks" onclick="openTab(event, 'submissions-tab')">Submissões</button><li>
+</apply>
 
 <apply template="_base">
   <mathjax-js/>
   <ace-editor-js/>
-  <div class="description">
+ 
+  <div id="description-tab" class="tabcontents">
     <page-description/>
   </div>
-  <p class="info">Linguagens: <page-languages/>.</p>  
-  <p class="info">
-    <current-timing>
-      <Early>
-	Submissões visíveis após <valid-from/>.
-      </Early>
-      <Valid>
-	Submissões terminam em <valid-until/> (<time-left/>).
-    </Valid>
-      <Overdue>
-	Submissões terminaram em <valid-until/>.
-      </Overdue>
-    </current-timing>
-</p>
 
-<if-submitted>
-  <current-timing>
-    <Early>
-      <p><submissions-count/> submissões antecipadas; os resultados serão
-	visíveis após <valid-from/>.</p> 
-    </Early>
-    <default>
-      <h2>Submissões anteriores</h2>
-      <ol class="submissions">
-	<submissions-list>
-	  <li>
-	    <a href="${report-url}"><submit-id/></a>&nbsp;<span class="${submit-classify}"><submit-classify/></span><if-accepted><time-icon/></if-accepted>
-	  </li>
-	</submissions-list>
-      </ol>
-    </default>
-  </current-timing>
-</if-submitted>
+  <div id="submissions-tab" class="tabcontents">
+    <page-title/>
+    <if-submitted>
+	<h3>Submissões anteriores</h3>
+	<if-submit-early>
+	  <p><submissions-count/> submissões antecipadas;
+	    resultados visíveis depois de <submit-after/>.</p> 
+	  <else/>    
+	  <ol class="submissions">
+	    <submissions-list>
+	      <li>
+		<a href="${report-url}"><submit-id/>&nbsp;<span class="${result-status}"><result-status/></span></a>&nbsp;<valid-icon/>
+	      </li>
+	    </submissions-list>
+	  </ol>
+	</if-submit-early>
+	<else/>
+	<p>Nenhuma submissão efetuada.</p>
+    </if-submitted>
+  </div>
 
-<h2>Nova submissão</h2>
-
-<form id="codeform" method="POST" action="${page-url}">
-  <p>
-    <input type="file" id="fileselect"
-	   accept="${language-extensions}"/> &nbsp;
-    <input-language-selector id="langselect" name="language" form="codeform"/>
-  </p>
-  <p><textarea id="code" name="code" style="display:none;"/></p>
-  <div id="editor"><default-text/></div>
-  <p>
-    <input type="submit" value="Submeter"/> &emsp;
-    <a href="${page-parent-url}"
-       class="button">Voltar à página de índice</a>
-  </p>
-</form>
+  <div id="editor-tab" class="tabcontents">
+    <page-title/>
+    <apply template="_timing"/>
+    <if-allowed>
+      <form id="codeform" method="POST" action="${page-url}">
+	<p>
+	  <input type="file" id="fileselect"
+		 accept="${language-extensions}"/> &nbsp;
+	  <input-language-selector id="langselect" name="language" form="codeform"/> &emsp;
+	  <input type="submit" value="Submeter"/>
+    &emsp;&emsp;&emsp;&emsp;&emsp;
+    <apply template="_fontsize"/>
+	</p>
+	<p><textarea id="code" name="code" style="display:none;"/></p>
+	<div id="editor"><default-text/></div>
+      </form>
+    </if-allowed>
+  </div>
 </apply>
 
 
+
+<if-allowed>
 <script type="text/javascript">
   var editor = startAceEditor('editor');
 
@@ -74,12 +74,34 @@
     function() { fileListener(editor, 'fileselect', 'langselect'); });
 					      
   document.getElementById('langselect').addEventListener('change',
-    function() { editor.session.setMode(languageModes[this.selectedIndex]); } );
+  function() { editor.session.setMode(languageModes[this.selectedIndex]); } );
 </script>
-
 <language-constants-js/>
 <default-language-js/>
+</if-allowed>
 
-<apply template="_browse">
-  <li><a title="Editar a página de exercício" href="${file-url}">Editar</a></li>
-</apply>
+<script>
+function openTab(evt, tabName) {
+  // Declare all variables
+  var i, tabcontent, tablinks;
+
+  // Get all elements with class="tabcontent" and hide them
+  tabcontent = document.getElementsByClassName("tabcontents");
+  for (i = 0; i < tabcontent.length; i++) {
+    tabcontent[i].style.display = "none";
+  }
+
+  // Get all elements with class="tablinks" and remove the class "active"
+  tablinks = document.getElementsByClassName("tablinks");
+  for (i = 0; i < tablinks.length; i++) {
+    tablinks[i].className = tablinks[i].className.replace(" active", "");
+  }
+
+  // Show the current tab, and add an "active" class to the button that opened the tab
+  document.getElementById(tabName).style.display = "block";
+  evt.currentTarget.className += " active";
+ }
+
+document.getElementById("description").click();
+</script>
+

@@ -12,6 +12,8 @@ a {
    text-decoration: underline;
 }
 
+
+
 a :hover {
    cursor: pointer;
    text-decoration: underline;
@@ -34,13 +36,6 @@ img {
 }
 
 
-.index {
-    float: left;
-    width: 30em;
-}
-
-.index li {
-}
 
 ul.menubar {
   list-style-type: none;
@@ -53,6 +48,15 @@ ul.menubar li {
     float: left;
 }
 
+ul.menubar li a.icon {
+    display: inline-block;
+    font-size: 125%;
+    text-align: center;
+    text-decoration: none;
+    padding: 7px 10px;
+
+}
+
 ul.menubar li a {
     display: inline-block;
     text-align: center;
@@ -61,12 +65,15 @@ ul.menubar li a {
 }
 
 ul.menubar li a:hover {
-    background-color: darkcyan;
-    color: white;
+    background-color: lightcyan;
+    color: black;
 }
 
 
-
+ul.menubar li button:hover {
+    background-color: lightcyan;
+    color: black;
+}
 
 ol.submissions {
   list-style-type: none;
@@ -88,18 +95,25 @@ ol.submissions:after {
   clear: both;
  }
 
-
 #content {
-   padding-top: 3em;
-   margin-left: auto;
-   margin-right: auto;
-   width: 80%;
+    padding-top: 3em;
+    margin-left: 1em;
+    margin-right: 1em;
+    width: auto;
+    height: auto;
+    /*
+    top: 0px;
+    bottom: 0px;
+    left: 0px;
+    right: 0px;
+    overflow-y: scroll;
+*/
 }
 
 
+
 #actions {
-   background-color: cyan;
-   position: absolute;
+   position: fixed;
    width: auto;
    height: 1.5em;
    left: 0em;
@@ -110,16 +124,32 @@ ol.submissions:after {
    padding-right: 1em;
    padding-top: 1em;
    padding-bottom: 1em;
+   background-color: cyan;
+   z-index: 10;
 }
 
+#uppercorner {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    left: auto;
+    width: 30em;
+    text-align: right;
+}
 
 
 .info {
    color: #0f0f0f;
    font-size: 90%;
-   font-style: oblique;
-   /* vertical-align: text-top;*/
+   font-style: italic;
 }
+
+.error {
+   color: red;
+   font-size: 100%;
+   font-style: oblique;
+}
+
 
 .tag {  
    color: #505050;
@@ -129,20 +159,35 @@ ol.submissions:after {
 
 
 .warnings {
-  color: red;
+    margin-top: 4ex;
+    margin-bottom: 4ex;
+    padding-left: 1em;
+    padding-right: 1em;
+    color: red;
+    font-style: oblique;
 }
 
+.errors  {
+    margin-top: 4ex;
+    margin-bottom: 4ex;
+    padding-left: 1em;
+    padding-right: 1em;
+    color: red;
+}
 
 .js-timer {
-  font-style: oblique;
+  font-style: italic;
 }
 
 
 #footer {
-    position: relative;
-    clear: both;
-    bottom: -2ex;
+    position: fixed;
+    bottom: 0px;
+    left: 0px;
+    right: 0px;
     width: auto;
+    height: 1em;
+    clear: both;
     background-color: cyan;
     padding-top: 2ex;
     padding-bottom: 2ex;
@@ -154,15 +199,29 @@ ol.submissions:after {
 
 pre {
     background-color: #ffffcc;
-    margin-left: 1em;
     padding: 1em;
-    width: 55em;
+    left: 1em;
+    right: 1em;
+    width: auto;
     overflow-x: auto;
 }
 
-.ace_editor {
-    width:  45em; 
-    height: 45ex; 
+
+
+#editor {
+    /*
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    top: 220px;
+    bottom: 10px;
+    width: auto;
+    height: auto;
+   */
+    left: 0px;
+    right: 0px;
+    width: 100%;
+    height: 60vh;    
 }
 
 
@@ -215,13 +274,23 @@ table.submissions td.received {
   font-size: 80%;
  }
 
+
+
+table.submissions td.check {
+    width: 8em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .Accepted {
   color: green; 
   font-weight: bold;
+    white-space: nowrap;
 } 
 
 .WrongAnswer  { 
   color: red;
+    white-space: nowrap;
 }
 
 
@@ -232,15 +301,21 @@ table.submissions td.received {
 .MemoryLimitExceeded,
 .TimeLimitExceeded  {
     color: black;
+    white-space: nowrap;
 }
 
 .Evaluating { 
     color: black;
     font-style: oblique;
+    white-space: nowrap;
 }
 
 
 /* --- Quiz answers --- */
+
+.fillin {
+    padding: 0.5ex;
+}
 
 .wrong {
     /* text-decoration: line-through; */
@@ -256,3 +331,61 @@ table.submissions td.received {
 .sourceCode .co { color: darkgreen; }
 .sourceCode .st { color: darkgreen; }
 */
+
+/* -- Tabbing --- */
+
+/* Style the tab */
+.tab {
+    right: 0px;
+    left: 0px;
+    bottom: 2.5em;
+    overflow: hidden;
+    padding-top: 5px;
+    margin-top: 5px;
+    width: auto;
+    border-bottom: 1px solid black;
+    border-right: none;
+    border-top: none;
+    border-left: none;
+}
+
+/* Style the buttons that are used to open the tab content */
+button.tablinks {
+    background-color: inherit;
+    font-size: 100%;
+    float: left;
+    cursor: pointer;
+    padding: 10px 10px;
+    /* transition: 0.3s; */
+    border: none;
+}
+
+
+/* Create an active/current tablink class */
+button.tablinks.active {
+    background-color: darkcyan;
+    color: white;
+    border: none;
+}
+
+
+
+/* Style the tab content */
+.tabcontent {
+  display: none;
+}
+
+
+body {
+   counter-reset: questions;
+}
+
+h1.question:before,h2.question:before,h3.question:before  {
+    content: counter(questions) ".";
+    counter-increment: questions;
+}
+
+h1.question, h2.question, h3.question {
+    font-size: 100%;
+}
+

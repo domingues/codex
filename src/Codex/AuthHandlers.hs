@@ -1,9 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
-
+{-
+ - Handlers for authentication related stuff
+-}
 module Codex.AuthHandlers (
   handleLogin,
   handleLogout,
-  handleRegister
+  handleRegister,
+  
   ) where
 
 import           Data.ByteString.UTF8 (ByteString)
@@ -18,8 +21,6 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
 import           Control.Monad.Trans.Except
-
-import           Data.Monoid
 
 import           Snap.Core
 import           Snap.Snaplet
@@ -39,9 +40,12 @@ import           Codex.LdapAuth
 ------------------------------------------------------------------------------
 -- | Handle login requests
 handleLogin :: Codex ()
-handleLogin =
-  method GET (loginForm "_login" Nothing) <|>
-  method POST handleLoginSubmit
+handleLogin = do
+  opt <- with auth currentUser
+  case opt of
+    Just _ -> redirectURL home
+    Nothing -> method GET (loginForm "_login" Nothing) <|>
+               method POST handleLoginSubmit
 
 
 -- | Render login and register form
@@ -66,7 +70,7 @@ handleLoginSubmit = do
   ldap <- getLdap
   r <- with auth $ loginByUsername (T.decodeUtf8 user) (ClearText passwd) False
   case r of
-    Right au -> do
+    Right _ -> do
       addr <- getsRequest rqClientAddr
       logMsg (user <> " logged in from " <> addr)
       redirectURL home
@@ -149,3 +153,5 @@ handleLogout = method GET $ do
 
 home :: AppUrl
 home = Page ["index.md"]
+
+

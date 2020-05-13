@@ -8,12 +8,15 @@ module Codex.Tester.Utils
   , assert
   , fileExists
   , removeFileIfExists
+  , cleanupFiles
   , chmod
   , readable, executable, writeable
   , runCompiler
   , safeExec
   , unsafeExec
   , getQuickCheckArgs
+  , parseArgs
+  , globPatterns
   ) where
 
 
@@ -29,12 +32,13 @@ import           System.Exit
 import           System.Directory (doesFileExist, removeFile)
 import           System.Posix.Files
 import           System.Posix.Types (FileMode)
-
+import           System.FilePath.Glob(glob)
+import           System.FilePath ((</>))
 
 import           Control.Concurrent (forkIO)
-import           Control.Concurrent.Async (async, wait)
+import           Control.Concurrent.Async (concurrently)
 import           System.Process (readProcessWithExitCode,
-                                  terminateProcess, waitForProcess)
+                                 waitForProcess)
 import           System.IO.Streams (InputStream, OutputStream)
 import qualified System.IO.Streams as Streams
 
@@ -47,7 +51,8 @@ import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as T
 import qualified Data.Text.Encoding.Error       as T
 
-  
+import           Data.Int (Int64)
+import           Data.List (sort)
 import           Data.Bits
 import           Data.Maybe(catMaybes)
 
@@ -55,6 +60,9 @@ import           Text.Pandoc(Meta)
 import           Codex.Page(lookupFromMeta)
 import           Codex.Tester.Result
 import           Codex.Tester.Limits
+
+import qualified ShellWords
+
 
 -- | match a piece of text
 match :: Text -> Text -> Bool
@@ -108,27 +116,33 @@ writeable mode =
   mode .|. ownerWriteMode .|. groupWriteMode .|. otherWriteMode
 
 
-
-
-runCompiler :: FilePath -> [String] -> IO ()
-runCompiler cmd args = do
-  (exitCode, _, err) <- readProcessWithExitCode cmd args ""
+-- | run a compiler (possibly under a safe sandbox)
+runCompiler :: Maybe Limits -> FilePath -> [String] -> IO ()
+runCompiler optLimits cmd args = do
+  (exitCode, out, err) <- case optLimits of
+    Nothing -> readTextProcessWithExitCode cmd args ""
+    Just limits -> safeExec limits cmd Nothing args ""   
   case exitCode of
-    ExitFailure _ ->
-      throwIO (compileError $ T.pack err)
+    ExitFailure _ -> 
+      throwIO (compileError (out <> err))
     ExitSuccess ->
       return ()
+
+readTextProcessWithExitCode cmd args stdin = do
+  (exitCode, out, err) <- readProcessWithExitCode cmd args stdin
+  return (exitCode, T.pack out, T.pack err)
 
 
 -- | safeExec with text input/output
 safeExec :: Limits
-          -> FilePath           -- ^ command
-          -> [String]           -- ^ arguments
-          -> Text               -- ^ stdin
-          -> IO (ExitCode, Text, Text)
-             -- ^ code, stdout, stderr
-safeExec limits exec args stdin = do
-  (code, out, err) <- safeExecBS limits exec args (T.encodeUtf8 stdin)
+         -> FilePath           -- ^ command
+         -> Maybe FilePath     -- ^ optional working directory
+         -> [String]           -- ^ comand line arguments
+         -> Text               -- ^ stdin
+         -> IO (ExitCode, Text, Text)
+         -- ^ code, stdout, stderr
+safeExec limits exec dir args stdin = do
+  (code, out, err) <- safeExecBS limits exec dir args (T.encodeUtf8 stdin)
   return (code,
            T.decodeUtf8With T.lenientDecode out,
            T.decodeUtf8With T.lenientDecode err)
@@ -137,29 +151,28 @@ safeExec limits exec args stdin = do
 -- | safeExec using streaming I/O to handle output limits
 --
 safeExecBS :: Limits
-         -> FilePath           -- ^ command
-         -> [String]           -- ^ arguments
-         -> ByteString         -- ^ stdin
-         -> IO (ExitCode, ByteString,ByteString)
-             -- ^ code, stdout, stderr
-safeExecBS Limits{..} exec args inbs = do
-  (inp, out, err, pid) <-
-    Streams.runInteractiveProcess "safeexec" (args' ++ args) Nothing Nothing
+           -> FilePath           -- ^ command
+           -> Maybe FilePath     -- ^ working directory
+           -> [String]           -- ^ arguments
+           -> ByteString         -- ^ stdin
+           -> IO (ExitCode, ByteString,ByteString)
+           -- ^ code, stdout, stderr
+safeExecBS Limits{..} exec dir args inbs = do
+  (inp, outstream, errstream, pid) <-
+    (Streams.runInteractiveProcess "safeexec" (args' ++ args) dir Nothing)
   (do forkIO (produceStream inp inbs)
-      a1 <- async (consumeStream outputLimit out)
-      a2 <- async (consumeStream outputLimit err)
-      outbs <- wait a1
-      errbs <- wait a2
+      (outbs, errbs) <- concurrently
+                        (consumeStream outputLimit outstream)
+                        (consumeStream outputLimit errstream) 
       code <- waitForProcess pid
       return (code, outbs, errbs)
-    ) `catch` (\(e ::SomeException) ->
-                  do terminateProcess pid
-                     code <- waitForProcess pid
+    ) `catch` (\(e :: SomeException) ->
+                  do code <- waitForProcess pid
                      return (code, "", B.pack $ show e)
-              )
+              ) 
   where
-    outputLimit = maybe 30000 fromIntegral maxFSize
-    -- default output limit: 30K bytes
+    -- default output limit: 50K bytes
+    outputLimit = maybe 50000 fromIntegral maxFSize
     mkArg opt = maybe [] (\c -> [opt, show c])
     args' = mkArg "--cpu" maxCpuTime
             ++
@@ -179,31 +192,23 @@ safeExecBS Limits{..} exec args inbs = do
 
 
 
-produceStream :: OutputStream a -> a -> IO ()
-produceStream s v = do
-  Streams.write (Just v) s
-  Streams.write Nothing s
+produceStream :: OutputStream ByteString -> ByteString -> IO ()
+produceStream out bs
+  = Streams.fromByteString bs >>= Streams.connectTo out
 
 
--- | consume a stream and accumulate output
--- throws an exception if maximum size exceeded
-consumeStream :: Int -> InputStream ByteString -> IO ByteString
-consumeStream maxSize inp = do
-  buf <- worker maxSize inp mempty
-  return (LB.toStrict . B.toLazyByteString $ buf)
-  where
-    worker :: Int -> InputStream ByteString -> B.Builder -> IO B.Builder
-    worker size inp buf = do
-      response <- Streams.read inp
-      case response of
-        Nothing -> return buf
-        Just bytes ->
-          let k = B.length bytes
-          in if k > size then
-               ioError $ userError "Output Limit Exceeded"
-             else
-               worker (size - k) inp (buf <> B.byteString bytes)
-
+-- | concatenate bytes from an input stream upto a specified limit
+-- NB: this function consumes the input stream until the end
+--
+consumeStream :: Int64 -> InputStream ByteString -> IO ByteString
+consumeStream limit stream = do
+  (stream, getCount) <- Streams.countInput stream
+  LB.toStrict . B.toLazyByteString <$>  
+    Streams.foldM (\builder bs -> do
+                      c <- getCount
+                      if c > limit
+                        then return builder
+                        else return (builder <> B.byteString bs)) mempty stream
   
 unsafeExec :: FilePath                 -- ^ command
           -> [String]                  -- ^ arguments
@@ -229,3 +234,24 @@ getQuickCheckArgs meta
       = fmap (\val -> "--" ++ key ++ "=" ++ val) (lookupFromMeta key meta)
 
 
+
+-- | parse a command line string
+parseArgs :: MonadIO m => String -> m [String]
+parseArgs ""
+  = return [] -- special case to signal empty arguments
+parseArgs txt = case ShellWords.parse txt of
+  Left msg ->
+    liftIO $ throwIO $ userError ("parse error in command-line arguments: " <> msg)
+  Right args ->
+    return args
+
+
+globPattern :: MonadIO m => String -> m [FilePath]
+globPattern patt = do                        
+  files <- sort <$> liftIO (glob patt)
+  when (null files) $
+    liftIO $ throwIO $ userError ("no files match " ++ show patt)
+  return files
+
+globPatterns :: MonadIO m => FilePath -> [String] -> m [FilePath]
+globPatterns dir patts = concat <$> mapM (globPattern . (dir</>)) patts

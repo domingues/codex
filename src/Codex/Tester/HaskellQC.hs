@@ -9,10 +9,11 @@ module Codex.Tester.HaskellQC (
 
 import           Data.Text (Text)
 import qualified Data.Text.IO as T
-
+import           Data.Maybe (fromMaybe)
 import           Codex.Tester 
 
 import           Control.Exception (catch)
+import           System.Directory(copyFile)
 
 
 
@@ -21,46 +22,49 @@ haskellQCTester :: Tester Result
 haskellQCTester = tester "quickcheck" $ do
   Code lang src <- testCode
   guard (lang == "haskell")
-  path <- testPath
-  --------------
-  let qcpath = replaceExtension path ".hs"
+  path <- testFilePath
+  let dir = takeDirectory path  
+  qcpath <- fromMaybe (replaceExtension path ".hs")
+            <$> metadataPath "properties"
   assert (fileExists qcpath)
-      ("quickcheck file not found: " <> show qcpath)
+      ("properties file not found: " <> show qcpath)
   props <- liftIO $ T.readFile qcpath
+  files <- globPatterns dir =<< metadataWithDefault "files" []
   qcArgs <- getQuickCheckArgs <$> testMetadata
   ghc <- configured "language.haskell.compiler"
-  limits <- testLimits "language.haskell.limits"
-  liftIO (haskellRunner limits ghc qcArgs src props `catch` return)
+  limits <- configLimits "language.haskell.limits"
+  liftIO (haskellRunner limits ghc qcArgs files src props `catch` return)
 
 
-haskellRunner :: Limits -> FilePath -> [String] -> Text -> Text -> IO Result
-haskellRunner limits ghc qcArgs code props =
-   withTempDir "codex" $ \dir -> do
-     let hs_file   = dir </> "Submission.hs"
-     let main_file = dir </> "Main.hs"
-     let exe_file = dir </> "Main"
-     let cmd:args = words ghc
-     let args' = args ++ ["-i"++dir, main_file, "-o", exe_file]
+haskellRunner :: Limits -> FilePath -> [String] -> [FilePath]
+              -> Text -> Text -> IO Result
+haskellRunner limits ghc qcArgs files code props =
+   withTempDir "codex" $ \tmpdir -> do
+     -- copy extra files
+     mapM_ (\f -> copyFile f (tmpdir </> takeFileName f)) files
+     let hs_file   = tmpdir </> "Submission.hs"
+     let main_file = tmpdir </> "Main.hs"
+     let exe_file = tmpdir </> "Main"
+     cmd:args <- parseArgs ghc
+     let args' = args ++ ["-i"++tmpdir, main_file, "-o", exe_file]
      T.writeFile hs_file (header <> code)
      T.writeFile main_file props
-     runCompiler cmd args'
-     chmod executable dir
-     chmod readable exe_file
-     classify <$> safeExec limits exe_file qcArgs ""
+     chmod executable tmpdir
+     chmod writeable tmpdir
+     chmod readable hs_file
+     runCompiler (Just limits) cmd args'
+     classify <$> safeExec limits exe_file Nothing qcArgs ""
 
 header :: Text
 header = "module Submission where\n\n"
 
 
 classify :: (ExitCode, Text, Text) -> Result
-classify (_, stdout, stderr)
-  | match "Not in scope" stderr ||
-    match "parse error" stderr  ||
-    match "Couldn't match" stderr  = compileError stderr
-  | match "Time Limit" stderr   = timeLimitExceeded stderr
-  | match "Memory Limit" stderr = memoryLimitExceeded stderr
-  | match "Failed" stdout       = wrongAnswer stdout
-  | match "Command exited with non-zero status" stderr = miscError stderr
-  | match "OK" stdout = accepted stdout
-  | otherwise  = miscError (stdout <> stderr)
+classify (ExitSuccess, stdout, _) = accepted stdout
+classify (ExitFailure _, stdout, stderr)
+  | match "Time Limit" stderr      = timeLimitExceeded stderr
+  | match "Memory Limit" stderr    = memoryLimitExceeded stderr
+  | match "Exception" stdout       = runtimeError stdout
+  | match "Failed!" stdout         = wrongAnswer stdout
+  | otherwise                      = miscError (stdout<>stderr)
 

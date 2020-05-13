@@ -1,4 +1,7 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards #-} 
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
 {-
    Produce printouts for exams, etc.
 -}
@@ -13,27 +16,28 @@ import           System.Directory
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import           Control.Monad (forM)
-import           Control.Monad.Trans
+import           Control.Monad.State
 
 import qualified Data.Configurator as Configurator
 import           Snap.Snaplet
+import           Snap.Snaplet.Router
 
 import           Codex.Utils
+import           Codex.Policy (formatLocalTime)
 import           Codex.Types
 import           Codex.Application
+import           Codex.Handlers
 import           Codex.Submission
 import           Codex.Page
-import           Codex.Quiz hiding (header)
 import           Codex.Tester.Result
 
-import           Text.Pandoc.Highlighting (monochrome)
-import           Text.Pandoc hiding (getZonedTime)
+import           Text.Pandoc hiding (getCurrentTimeZone, getZonedTime)
 import           Text.Pandoc.Builder
 
-import           Data.Maybe
 import           Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
-
+import           Data.List (sortBy)
+import           Data.Function(on)
 
 
 -- | generate Markdown printouts for best submissions
@@ -42,17 +46,15 @@ generatePrintouts patts order = do
   conf <- getSnapletUserConfig
   dir <- liftIO $ Configurator.require conf "printouts.directory"
   liftIO $ createDirectoryIfMissing True dir
-  templ <- liftIO $ readFile =<< Configurator.require conf "printouts.template"
-  -- header <- liftIO $
-  --           readMarkdownFile =<<
-  --           Configurator.require conf "printouts.header"
+  templ <- liftIO $
+           readFile =<< Configurator.require conf "printouts.template"
   let opts = def { writerTemplate =  Just templ
                  , writerExtensions = pandocExtensions
                  , writerSetextHeaders = False
                  , writerListings = True
                  }
-  getSummary patts order >>= writeReports dir opts
-  return ()
+  getSummary patts order >>= writePrintouts dir opts
+  redirectURL (Page ["index.md"])
 
 
 -- | cummulative summary of submissions
@@ -62,8 +64,8 @@ type Summary = HashMap UserLogin (HashMap FilePath Submission)
 -- | best of two submissions
 best :: Submission -> Submission -> Submission
 best s1 s2
-  = let class1 = resultClassify (submitResult s1)
-        class2 = resultClassify (submitResult s2)
+  = let class1 = resultStatus (submitResult s1)
+        class2 = resultStatus (submitResult s2)
     in case (class1, class2) of
          (Accepted, Accepted) -> latest s1 s2
          (Accepted, _)        -> s1
@@ -86,22 +88,15 @@ getSummary :: Patterns -> Codex.Submission.Ordering -> Codex Summary
 getSummary patts order 
   = withFilterSubmissions patts order HM.empty (\x y -> return (addSubmission x y))
 
-{-
--- | get all full name for collected users
-getNames :: [UserLogin] -> Codex Names
-getNames users = do
-  names <- forM users $ \uid ->
-    fromMaybe (fromLogin uid) <$> queryFullname uid
-  return $ M.fromList $ zip users names
--}
 
--- | generate reports from the summary
-writeReports :: FilePath -> WriterOptions -> Summary -> Codex [FilePath]
-writeReports dir opts  summary = do
+-- | generate printouts from the summary
+writePrintouts :: FilePath -> WriterOptions -> Summary -> Codex [FilePath]
+writePrintouts dir opts  summary = do
   forM (HM.toList summary) $
     \(uid, submap) -> do
         let filepath = dir </> T.unpack (fromLogin uid) <.> "md"
-        report <- userReport uid (HM.elems submap)
+        let sorted = sortBy (compare`on`submitPath) $ HM.elems submap
+        report <- userPrintout uid sorted
         case runPure (writeMarkdown opts report) of
           Right txt ->  do liftIO $ T.writeFile filepath txt
                            return filepath
@@ -109,72 +104,43 @@ writeReports dir opts  summary = do
 
     
     
-userReport :: UserLogin -> [Submission] -> Codex Pandoc
-userReport uid  submissions = do
+userPrintout :: UserLogin -> [Submission] -> Codex Pandoc
+userPrintout uid  submissions = do
+  Handlers{handlePrintout} <- gets _handlers
   root <- getDocumentRoot
+  tz <- liftIO getCurrentTimeZone
   now <- liftIO getZonedTime
   let login = T.unpack (fromLogin uid)
   fullname <- maybe login T.unpack <$> queryFullname uid
   blocks <- forM submissions $
             \sub -> do
-              page <- readMarkdownFile (root </> submitPath sub) 
-              return (submissionReport page sub)
+              page <- readMarkdownFile (root </> submitPath sub)
+              content <- handlePrintout uid page sub
+              return (submissionPrintout tz page sub content)
   return (-- setTitle (text title) $
           setAuthors [text $ fullname ++ " (" ++ login ++ ")"] $
           setDate (text $ show now) $
           doc $ mconcat blocks)
 
 
-submissionReport :: Page -> Submission -> Blocks
-submissionReport page sub@Submission{..}  
+submissionPrintout :: TimeZone -> Page -> Submission -> Blocks -> Blocks
+submissionPrintout tz page Submission{..}  content
   = mconcat [ header 1 title
-            , submissionHeader sub
+            , headline
             , content
-            , codeBlock msg
-            , horizontalRule ]
+            , horizontalRule
+            ]
   where
     title = maybe (text submitPath) fromList (pageTitle page)
-    content = if isQuiz page
-              then quizReport quiz answers 
-              else codeReport page sub 
-    quiz = makeQuiz page
-    answers = fromMaybe emptyAnswers $
-              decodeAnswers $ codeText $ submitCode
-    msg = T.unpack $ resultMessage submitResult
-
-submissionHeader Submission{..}
-  = header 2 (strong (text $ show $ resultClassify submitResult) <>
-              space <>
-              emph (text $ "(" ++ show submitTiming ++ ")")) <>
-    para (text ("Submission " ++ show submitId ++ "; " ++
-                 show submitTime ))
-
-codeReport page Submission{..}
-  = let 
-        lang = T.unpack $ fromLanguage $ codeLang submitCode
-        code = T.unpack $ codeText submitCode
-  in codeBlockWith ("", [lang, "numberLines"], []) code
-
-quizReport (Quiz _ questions) answers 
-  = mconcat (map (flip questionReport answers) questions)
-
-
-questionReport :: Question -> Answers -> Blocks
-questionReport question@(Question preamble attrs alts) answers
-  = let checked = lookupAnswers question answers
-    in fromList preamble  <>
-       orderedListWith attrs [ questionItem checked alt | alt <- alts ]
-
-
-questionItem checked (label, truth, blocks)
-  = label1 <> fromList blocks <> label2
-  where
-    reply = label `elem` checked
-    label1 = if reply then plain (math "\\bullet")
-             else plain (math "\\circ")
-    label2 | reply && truth = plain $ strong $ text "OK"
-           | reply && not truth = plain $ strong $ text "WRONG"
-           | not reply && truth = plain $ strong $ text "MISS"
-           | otherwise = mempty
-    
+    headline
+      = header 2 (strong (text $ show $ resultStatus submitResult) <>
+                  space <>
+                  emph (text $ "(" ++ checkText submitCheck ++ ")")) <>
+        para (text ("Submission " ++ show submitId ++ "; " ++
+                    T.unpack (formatLocalTime tz submitTime))
+             )
+  
+checkText :: Validity -> String
+checkText Valid         = "Valid"
+checkText (Invalid msg) = "Invalid: " ++ T.unpack msg
 

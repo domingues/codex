@@ -1,37 +1,30 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 --
--- | A monad for random computations
+-- | A monad for computations that require pseudo-randomization
 --
-module Codex.Quiz.Random(
+module Codex.Random(
   Rand,
-  runRand, shuffle,
-  -- module System.Random.TF.Gen,
-  -- module System.Random.TF.Init,
-  -- module System.Random.TF.Instances
-  module System.Random
+  run, shuffle, choose, 
   ) where
 
-{-
-import           System.Random.TG.Gen
-import           System.Random.TF.Init
-import           System.Random.TF.Instances
--}
 import           System.Random
 import           Control.Monad.State.Strict
 import qualified Data.IntMap as IntMap
 import           Data.IntMap (IntMap, (!))
 
 
--- | random shuffleing for questions & answers
--- monad for random computations
-type Rand = State StdGen
+-- | state monad for random computations
+newtype Rand a
+  = Rand { unRand :: State StdGen a }
+  deriving (Functor, Applicative, Monad)
 
-runRand ::  Rand a -> Int -> a
-runRand action salt = evalState action (mkStdGen salt)
-
+run :: Int -> Rand a -> a
+run seed action  = evalState (unRand action) (mkStdGen seed)
 
 -- | shuffle a list
 shuffle :: [a] -> Rand [a]
-shuffle xs = do
+shuffle xs = Rand $ do
   g <- get
   let (xs', g') = fisherYates g xs
   put g'
@@ -40,7 +33,8 @@ shuffle xs = do
 --
 -- | purely functional Fisher-Yates shuffling; O(n * log n) complexity
 --
-fisherYatesStep :: RandomGen g => (IntMap a, g) -> (Int, a) -> (IntMap a, g)
+fisherYatesStep ::
+  RandomGen g => (IntMap a, g) -> (Int, a) -> (IntMap a, g)
 fisherYatesStep (m, gen) (i, x)
   = ((IntMap.insert j x . IntMap.insert i (m ! j)) m, gen')
   where
@@ -53,3 +47,16 @@ fisherYates gen (x:xs) =
   where
     toElems (x, y) = (IntMap.elems x, y)
     initial x = (IntMap.singleton 0 x, gen)  
+
+
+
+
+-- | choose one element from a list
+choose :: [a] -> Rand a
+choose [] = error "Rand.choose: empty list"
+choose xs = Rand $ do
+  g <- get
+  let (i,g') = randomR (0, length xs-1) g
+  put g'
+  return (xs!!i)
+

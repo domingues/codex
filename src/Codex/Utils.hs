@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-
   Some helper handlers for our application monad
@@ -12,12 +13,13 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T
 
-import           Data.Maybe (fromMaybe, listToMaybe, maybeToList)
-import           Data.Aeson
+import qualified Data.ByteString.Lazy as LB
+
+import           Data.Maybe (fromMaybe, listToMaybe)
+import qualified Data.Aeson as Aeson
+import           Data.Aeson (FromJSON, ToJSON)
 import qualified Data.HashMap.Strict as HM
 import           Data.Map.Syntax
-
-import           Snap.Snaplet.Auth.Backends.SqliteSimple
 
 import           Snap.Core hiding (path)
 import           Snap.Snaplet
@@ -36,14 +38,14 @@ import qualified Text.XmlHtml as X
 import           Control.Monad (join)
 import           Control.Monad.State
 import           Control.Applicative 
-import           Control.Exception (SomeException)
+import           Control.Exception (SomeException(..))
 
 import qualified Data.Configurator as Configurator
 import qualified Data.Configurator.Types as Configurator
 
 import           Codex.Types
 import           Codex.Page
-import           Codex.Time
+import           Codex.Policy
 import           Codex.Application
 
 import           Data.Time.Clock
@@ -81,7 +83,7 @@ queryFullname uid = do
     list <- query "SELECT meta_json FROM snap_auth_user WHERE login = ?" (Only uid)
     return $ case list of
       (txt:_) -> do
-        hm <- decodeStrict (T.encodeUtf8 txt) :: Maybe (HM.HashMap Text Text)
+        hm <- Aeson.decodeStrict (T.encodeUtf8 txt) :: Maybe (HM.HashMap Text Text)
         HM.lookup "fullname" hm
       _ -> Nothing
 
@@ -105,52 +107,30 @@ authUserLogin = UserLogin . userLogin
 authFullname :: AuthUser -> Maybe Text
 authFullname au
   = case HM.lookup "fullname" (userMeta au) of
-    Just (String name) -> Just name
+    Just (Aeson.String name) -> Just name
     _                  -> Nothing
-
--- | Get user id and roles
-getUserRoles :: Codex (Maybe [Role])
-getUserRoles = do
-  mAu <- with auth currentUser
-  return (fmap userRoles mAu)
 
 
 isAdmin :: AuthUser -> Bool
 isAdmin au = Role "admin" `elem` userRoles au
 
--- | run a handle only under administrative login
-withAdmin :: Codex a -> Codex a
-withAdmin action = do
-  optlist <- getUserRoles
-  case optlist of
-    Nothing -> unauthorized
-    Just roles -> if Role "admin" `elem` roles then action
-                    else unauthorized
+-- | ensure that the logged user has administrative privileges
+requireAdmin :: Codex () 
+requireAdmin = do
+  usr <- require (with auth currentUser) <|> unauthorized
+  unless (isAdmin usr) unauthorized
 
 
 -- | get all events from the configuration 
 ----------------------------------------------------------------
-getEvents :: Codex Events
-getEvents = do
+getTimeEnv :: Codex TimeEnv
+getTimeEnv = do
   evcfg <- gets _eventcfg
   hm <- liftIO $ Configurator.getMap evcfg
-  let hm' = HM.map (\v -> Configurator.convert v >>= parseTime) hm
-  return (\k -> join (HM.lookup k hm'))
+  let hm' = HM.map (\v -> Configurator.convert v >>= parseTimeExpr) hm
+  tz <- liftIO $ getCurrentTimeZone
+  return $ makeTimeEnv tz (\k -> join (HM.lookup k hm'))
 
-  -- uevs <- maybe [] userEvents <$> with auth currentUser
-  -- dbevs <- query_ "SELECT name, time FROM events"
-  -- let evs = uevs ++ dbevs
-  -- return (`lookup` uevs)
-
-{-
--- | events associated with a user account
-userEvents :: AuthUser -> [(Text, Time)]
-userEvents au = [(n, fromUTCTime t) | (n,f) <- fields, t <- maybeToList (f au)]
-  where fields =  [("activation", userActivatedAt),
-                   ("creation", userCreatedAt),
-                   ("update", userUpdatedAt),
-                   ("login", userCurrentLoginAt)]
--}
 
 -- | get submission id from request parameters
 getSubmitId :: Codex (Maybe SubmitId)
@@ -219,10 +199,11 @@ finishError code msg = do
 
 
 
--- | splice an UTC time as a local time string
-utcTimeSplice :: Monad m => TimeZone -> UTCTime -> I.Splice m
-utcTimeSplice tz t =
-  I.textSplice $ T.pack $ formatTime defaultTimeLocale "%c" $ utcToLocalTime tz t
+-- | format an UTC time as a local time string
+localTimeSplice :: Monad m => TimeZone -> UTCTime -> I.Splice m
+localTimeSplice tz t =
+  I.textSplice $ T.pack $
+  formatTime defaultTimeLocale "%c" $ utcToLocalTime tz t
 
 
 -----------------------------------------------------------------------------
@@ -231,16 +212,23 @@ utcTimeSplice tz t =
 pageSplices  :: Monad m => Page -> Splices (I.Splice m)
 pageSplices page = do
   "page-description" ## return (pageToHtml page)
-  -- NB: not used; maybe remove?
-  -- "if-exercise" ## I.ifElseISplice (pageIsExercise page)
+  "page-title" ## return (blocksToHtml $ pageTitleBlocks page)
 
 
 pageUrlSplices :: FilePath -> ISplices
 pageUrlSplices rqpath = do
-  let path = splitDirectories rqpath
-  let parent= if null path then [] else init path ++ ["index.md"]
-  "page-url" ## urlSplice (Page path)
-  "page-parent-url" ## urlSplice (Page parent)
+  let paths = splitDirectories rqpath
+  let paths' = parent paths
+  "page-url" ## urlSplice (Page paths)
+  "page-parent-url" ## urlSplice (Page paths')
+  "if-parent" ## I.ifElseISplice (paths' /= paths)
+
+parent :: [FilePath] -> [FilePath]
+parent [] = []
+parent fs
+  | last fs == "index.md" = drop2 fs ++ ["index.md"]
+  | otherwise             = init fs ++ ["index.md"]
+  where drop2 = reverse . drop 2 . reverse
 
 fileUrlSplices :: FilePath -> ISplices
 fileUrlSplices rqpath = do
@@ -264,8 +252,6 @@ messageSplices mesgs = do
   where splice msg = "message" ## I.textSplice msg
 
 
-
-
 tagCaseSplice :: Monad m => Text -> I.Splice m
 tagCaseSplice tag = getParamNode >>= (I.runNodeList . select . X.childNodes)
    where
@@ -280,20 +266,6 @@ caseSplice v = tagCaseSplice (T.pack $ show v)
 
 
 --------------------------------------------------------------
- {-
--- | make a checkbox input for a tag filter
-checkboxInput :: Text -> Bool -> Bool -> [X.Node]
-checkboxInput value checked disabled
-  = [X.Element "label" attrs' [X.Element "input" attrs [], X.TextNode value]]
-  where attrs = [ ("checked", "checked") | checked ] ++
-                [ ("disabled", "disabled") | disabled ] ++
-                [ ("type", "checkbox"),
-                  ("name", "tag"),
-                  ("value", value),
-                  ("onclick", "this.form.submit();")
-                ]
-        attrs' = [ ("class","disabled") | disabled ]
--}
 
 checkboxInput :: [(Text,Text)] -> [X.Node] -> X.Node
 checkboxInput attrs contents = X.Element "input" attrs' contents
@@ -357,4 +329,51 @@ logMsg msg = do
   logger <- gets _logger
   liftIO $ FastLogger.logMsg logger =<< FastLogger.timestampedLogEntry msg
 
+{-
+withTimeSplices :: Page -> Codex a -> Codex a
+withTimeSplices page action = do
+  tz  <- liftIO getCurrentTimeZone
+  now <- liftIO getCurrentTime
+  env <- getTimeEnv
+  flip withSplices action $ 
+    case evalPolicy env (pageValid page) of
+      Left err -> do
+        "valid-from" ## I.textSplice err
+        "valid-until" ## I.textSplice err
+        "time-left" ## I.textSplice err        
+      Right constr -> do
+        "if-early" ## I.ifElseISplice (early now constr)
+        "if-late" ##  I.ifElseISplice (late now constr)
+        "if-valid" ## I.ifElseISplice (not (early now constr) &&
+                                       not (late now constr))
+        "if-limited" ## I.ifElseISplice (isJust $ higher constr)
+        "if-max-attempts" ## I.ifElseISplice (isJust $ maxAttempts constr)
+        "valid-from" ##
+          I.textSplice $ maybe "N/A" (showTime tz) (lower constr)
+        "valid-until" ##
+          I.textSplice $ maybe "N/A" (showTime tz) (higher constr)
+        "time-left" ##
+          I.textSplice $
+          maybe "N/A" (\t -> T.pack $ formatNominalDiffTime t)
+          (timeLeft now constr)
+-}
 
+
+getPolicy :: Page -> Codex (Policy UTCTime)
+getPolicy page = do
+  env <- getTimeEnv
+  case evalPolicy env =<< pagePolicy page of
+    Left err -> internalError (SomeException $ userError $ T.unpack err)
+    Right pol -> return pol
+
+    
+feedbackSplices :: Page -> ISplices
+feedbackSplices page = do
+  "if-feedback" ## I.ifElseISplice (pageFeedback page)
+
+
+decodeText :: FromJSON a => Text -> Maybe a
+decodeText = Aeson.decode . LB.fromStrict . T.encodeUtf8
+
+encodeText :: ToJSON a  => a -> Text
+encodeText = T.decodeUtf8 . LB.toStrict . Aeson.encode
